@@ -1,0 +1,27 @@
+services:
+  career-agent:
+    build:
+      context: .
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    image: career-agent
+    container_name: career-agent
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Your career data lives on the host (editable, survives rebuilds).
+      - ./memory:/app/memory
+      - ./resumes:/app/resumes
+      - ./data:/app/data
+      # Keep CLAUDE.md edits live without rebuilding.
+      - ./CLAUDE.md:/app/CLAUDE.md:ro
+      # Subscription auth, read-only seed. Never baked into the image.
+      - ${HOME}/.claude/.credentials.json:/seed/credentials.json:ro
+      # Container's own isolated Claude state (sessions etc.), persisted so
+      # conversation continuity survives restarts.
+      - claude_state:/home/appuser/.claude
+
+volumes:
+  claude_state:

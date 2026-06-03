@@ -1,0 +1,19 @@
+.env
+.claude/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Private data — do not commit
+data/sessions/
+resumes/
+uploads/
+memory/profile.md
+memory/goals.md
+# Ignore the private contents but keep the folder structure (.gitkeep) so a
+# fresh clone has the expected layout.
+memory/experiences/*
+!memory/experiences/.gitkeep
+memory/projects/*
+!memory/projects/.gitkeep

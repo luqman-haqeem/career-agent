@@ -1,0 +1,82 @@
+\documentclass[11pt,a4paper]{article}
+% Tectonic compiles with XeTeX, which handles UTF-8 natively — no inputenc/fontenc.
+\usepackage[margin=1.5cm]{geometry}
+\usepackage{lmodern}
+\renewcommand{\familydefault}{\sfdefault}  % clean modern sans
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+
+\definecolor{accent}{HTML}{1F6FB2}
+\setlength{\parindent}{0pt}
+\pagestyle{empty}
+
+\titleformat{\section}{\large\bfseries\color{accent}}{}{0pt}{}[{\color{accent!60}\titlerule[0.8pt]}]
+\titlespacing{\section}{0pt}{12pt}{5pt}
+\newcommand{\daterange}[1]{{\small\color{black!55}#1}}
+\setlist[itemize]{leftmargin=1.2em,itemsep=1pt,topsep=2pt,parsep=0pt}
+
+\begin{document}
+
+\begin{center}
+  {\Huge\bfseries << name|tex >>}\\[3pt]
+<% if label %>  {\large\color{accent} << label|tex >>}\\[5pt]<% endif %>
+<% if contact %>  {\small << contact|tex >>}<% endif %>
+\end{center}
+
+<% if summary %>
+\smallskip
+{\itshape << summary|tex >>}
+\smallskip
+<% endif %>
+
+<% if work %>
+\section{Experience}
+<% for w in work %>
+{\bfseries << w.name|tex >>}\hfill\daterange{<< w.dates|tex >>}\\
+{\itshape << w.position|tex >>}<% if w.location %>\hfill{\small << w.location|tex >>}<% endif %>
+<% if w.summary %>\par\smallskip << w.summary|tex >><% endif %>
+<% if w.highlights %>
+\begin{itemize}
+<% for h in w.highlights %>  \item << h|tex >>
+<% endfor %>\end{itemize}
+<% endif %>
+\smallskip
+
+<% endfor %>
+<% endif %>
+
+<% if projects %>
+\section{Projects}
+<% for p in projects %>
+{\bfseries << p.name|tex >>}<% if p.url %>\hfill{\small << p.url|tex >>}<% endif %>
+<% if p.description %>\par\smallskip << p.description|tex >><% endif %>
+<% if p.highlights %>
+\begin{itemize}
+<% for h in p.highlights %>  \item << h|tex >>
+<% endfor %>\end{itemize}
+<% endif %>
+\smallskip
+
+<% endfor %>
+<% endif %>
+
+<% if education %>
+\section{Education}
+<% for e in education %>
+{\bfseries << e.institution|tex >>}\hfill\daterange{<< e.dates|tex >>}\\
+<< e.studyArea|tex >><% if e.score %>\hfill{\small << e.score|tex >>}<% endif %>
+\smallskip
+
+<% endfor %>
+<% endif %>
+
+<% if skills %>
+\section{Skills}
+<% for s in skills %>{\bfseries << s.name|tex >>:} << s.keywords|tex >>\\[2pt]
+<% endfor %>
+<% endif %>
+
+\end{document}

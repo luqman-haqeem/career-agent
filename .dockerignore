@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+.env
+data/sessions/*
+resumes/*
+uploads/*
+# Keep the experiences/projects dirs but not their private contents:
+memory/experiences/*
+memory/projects/*
+!memory/experiences/.gitkeep
+!memory/projects/.gitkeep
+README.md
