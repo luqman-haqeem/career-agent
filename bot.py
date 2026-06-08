@@ -585,6 +585,7 @@ def main() -> None:
 
     async def _set_commands(application: Application) -> None:
         await application.bot.set_my_commands([
+            ("scan", "Search for new job matches now"),
             ("status", "Show conversation size + reset button"),
             ("reset", "Start a fresh conversation (memory kept)"),
             ("help", "How to use me"),
