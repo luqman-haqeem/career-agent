@@ -16,7 +16,7 @@ def _path():
 
 
 def _now_iso() -> str:
-    return _dt.datetime.now().isoformat(timespec="seconds")
+    return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
 
 def _load() -> dict:
@@ -57,7 +57,7 @@ def get(jid: str):
 
 
 def record(job: dict, state: str) -> str:
-    jid = job.get("id") or job_id(job)
+    jid = job_id(job)
     data = _load()
     entry = data["jobs"].get(jid, {})
     entry.update({
@@ -67,9 +67,9 @@ def record(job: dict, state: str) -> str:
         "location": job.get("location", ""),
         "url": job.get("url", ""),
         "fit_score": job.get("fit_score"),
-        "state": state,
     })
     entry.setdefault("first_seen", _now_iso())
+    entry.setdefault("state", state)
     data["jobs"][jid] = entry
     _save(data)
     return jid

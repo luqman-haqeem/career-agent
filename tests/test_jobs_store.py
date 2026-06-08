@@ -53,3 +53,15 @@ def test_recent_labels(tmp_path, monkeypatch):
     labels = js.recent_labels()
     assert "SRE @ Acme" in labels
     assert "DevOps @ Beta" in labels
+
+
+def test_corrupt_file_returns_empty(tmp_path, monkeypatch):
+    js = _fresh_store(tmp_path, monkeypatch)
+    (tmp_path / "jobs_seen.json").write_text("{not valid json", encoding="utf-8")
+    assert js.seen_ids() == set()
+
+
+def test_wrong_shape_returns_empty(tmp_path, monkeypatch):
+    js = _fresh_store(tmp_path, monkeypatch)
+    (tmp_path / "jobs_seen.json").write_text('["a", "b"]', encoding="utf-8")
+    assert js.seen_ids() == set()
