@@ -308,6 +308,9 @@ async def _deliver_new_files(update: Update, before: dict) -> None:
 
 
 # --- Job discovery ---------------------------------------------------------
+_SCAN_TZ = ZoneInfo(config.SCAN_TZ)  # validated at import; reused by scheduler + scan gate
+
+
 def _job_card_html(job: dict) -> str:
     title = html.escape(job.get("title", "Role"))
     company = html.escape(job.get("company", ""))
@@ -316,7 +319,9 @@ def _job_card_html(job: dict) -> str:
     score_line = f"Fit <b>{score}/10</b>" if score is not None else "Fit: n/a"
     why_fit = html.escape(job.get("why_fit", "") or "")
     why_aligns = html.escape(job.get("why_aligns", "") or "")
-    url = html.escape(job.get("url", ""))
+    url = html.escape(job.get("url", "") or "")
+    if url and not url.lower().startswith(("https://", "http://")):
+        url = ""  # drop non-http schemes (e.g. javascript:) before putting in href
     lines = [f"<b>{title}</b> @ {company} · {location}", score_line]
     if why_fit:
         lines.append(f"💪 {why_fit}")
@@ -363,7 +368,7 @@ def _owner_chat_id() -> int:
 
 async def _scheduled_scan(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Daily timer; only actually scans on configured weekdays (Monday=0)."""
-    today = dt.datetime.now(ZoneInfo(config.SCAN_TZ)).weekday()
+    today = dt.datetime.now(_SCAN_TZ).weekday()
     if today not in config.SCAN_WEEKDAYS:
         return
     chat_id = _owner_chat_id()
@@ -378,7 +383,11 @@ async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Sorry — this is a private bot.")
         return
     await update.message.reply_text("🔍 Scanning for jobs… this can take a minute.")
-    await _do_scan(ctx.bot, update.effective_chat.id, manual=True)
+    try:
+        await _do_scan(ctx.bot, update.effective_chat.id, manual=True)
+    except Exception as e:  # noqa: BLE001
+        log.exception("scan_cmd failed")
+        await update.message.reply_text(f"⚠️ Scan error — {e}. Try again later.")
 
 
 def _safe_name(name: str) -> str:
@@ -524,7 +533,7 @@ def main() -> None:
         else:
             app.job_queue.run_daily(
                 _scheduled_scan,
-                time=dt.time(hour=config.SCAN_HOUR, tzinfo=ZoneInfo(config.SCAN_TZ)),
+                time=dt.time(hour=config.SCAN_HOUR, tzinfo=_SCAN_TZ),
                 name="job-discovery-scan",
             )
             log.info("Job discovery scheduled daily at %02d:00 %s on weekdays %s.",
