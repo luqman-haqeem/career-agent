@@ -313,6 +313,7 @@ async def _deliver_new_files(update: Update, before: dict) -> None:
 
 # --- Job discovery ---------------------------------------------------------
 _SCAN_TZ = ZoneInfo(config.SCAN_TZ)  # validated at import; reused by scheduler + scan gate
+_in_flight_applies: set = set()  # job ids currently generating a resume (double-tap guard)
 
 
 def _job_card_html(job: dict) -> str:
@@ -367,16 +368,25 @@ async def _on_job_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: s
         return
 
     if action == "apply":
+        if jid in _in_flight_applies:
+            await query.answer("Already generating — please wait.", show_alert=True)
+            return
         await query.answer("Tailoring your resume…")
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:  # noqa: BLE001
             pass
-        jobs_store.set_state(jid, "applied")
-        await _generate_resume_for(ctx, update.effective_chat.id, job)
+        _in_flight_applies.add(jid)
+        try:
+            await _generate_resume_for(ctx, update.effective_chat.id, job, jid)
+        finally:
+            _in_flight_applies.discard(jid)
+        return
+
+    await query.answer()  # unknown action — dismiss the spinner
 
 
-async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job: dict) -> None:
+async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job: dict, jid: str) -> None:
     session_id = load_session_id(chat_id)
     before = _resume_snapshot()
     prompt = (
@@ -391,6 +401,9 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
         "resumes/ as usual so the PDF is generated, then briefly tell me what you "
         "emphasized and any real gaps."
     )
+    await ctx.bot.send_message(
+        chat_id,
+        f"📄 Tailoring your resume for {job.get('title')} @ {job.get('company')} — about a minute…")
     typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
     try:
         text, session_id = await run_turn(prompt, session_id)
@@ -402,6 +415,7 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
         typing.cancel()
 
     save_session_id(chat_id, session_id)
+    jobs_store.set_state(jid, "applied")
     await _send_chat(ctx.bot, chat_id, text)
     await _deliver_changed_resumes(ctx.bot, chat_id, before)
 
