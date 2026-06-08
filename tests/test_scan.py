@@ -38,3 +38,12 @@ def test_coerce_fit_score_from_string():
     out = scan.parse_matches('[{"title":"SRE","company":"Acme","url":"https://x.io/1",'
                              '"fit_score":"9"}]')
     assert out[0]["fit_score"] == 9
+
+
+def test_parse_matches_prose_with_earlier_bracket():
+    text = ('Matches [top results]:\n'
+            '[{"title":"SRE","company":"Acme","url":"https://x.io/1","fit_score":8,'
+            '"why_fit":"a","why_aligns":"b","location":"KL"}]')
+    out = scan.parse_matches(text)
+    assert len(out) == 1
+    assert out[0]["company"] == "Acme"

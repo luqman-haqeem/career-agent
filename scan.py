@@ -5,7 +5,6 @@ user's chat conversation. Dedup is authoritative via jobs_store; the seen-labels
 the prompt are only a hint to the agent.
 """
 import json
-import re
 
 import agent
 import config
@@ -40,7 +39,12 @@ def build_prompt(seen_labels: list) -> str:
 
 
 def _extract_array(text: str):
-    """Pull the first JSON array out of the agent's reply, tolerating fences/prose."""
+    """Pull the first JSON array out of the agent's reply, tolerating fences/prose.
+
+    Tries a clean whole-string parse first; otherwise scans successive '[' positions
+    (paired with the last ']') so a bracketed hedge in prose before the real array
+    doesn't cause the whole result to be dropped. Returns [] if nothing parses.
+    """
     text = text.strip()
     try:
         data = json.loads(text)
@@ -48,15 +52,21 @@ def _extract_array(text: str):
             return data
     except json.JSONDecodeError:
         pass
-    start = text.find("[")
     end = text.rfind("]")
-    if start == -1 or end == -1 or end < start:
+    if end == -1:
         return []
-    try:
-        data = json.loads(text[start:end + 1])
-        return data if isinstance(data, list) else []
-    except json.JSONDecodeError:
-        return []
+    idx = 0
+    while True:
+        start = text.find("[", idx)
+        if start == -1 or end < start:
+            return []
+        try:
+            data = json.loads(text[start:end + 1])
+            if isinstance(data, list):
+                return data
+        except json.JSONDecodeError:
+            pass
+        idx = start + 1
 
 
 def valid_match(m: dict) -> bool:
@@ -69,6 +79,7 @@ def valid_match(m: dict) -> bool:
 
 
 def _coerce(m: dict) -> dict:
+    """Normalize a match dict in place (string fit_score -> int, or None)."""
     score = m.get("fit_score")
     if isinstance(score, str):
         try:
