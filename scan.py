@@ -109,6 +109,7 @@ async def run_scan() -> list:
 
     Raises ScanError if the agent fails twice in a row.
     """
+    reply = ""  # sentinel; overwritten by _ask_agent below, or ScanError is raised
     try:
         reply = await _ask_agent()
     except Exception:  # noqa: BLE001 - retry once on any backend error

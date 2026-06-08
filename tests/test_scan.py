@@ -100,6 +100,7 @@ async def test_run_scan_caps_to_max(store_in_tmp, monkeypatch):
     monkeypatch.setattr(agent, "run_turn", _fake_reply(payload))
     matches = await scan.run_scan()
     assert len(matches) == 1
+    assert len(store_in_tmp.seen_ids()) == 1  # dropped job not consumed from the store
 
 
 async def test_run_scan_retries_once_then_raises(store_in_tmp, monkeypatch):
@@ -113,3 +114,14 @@ async def test_run_scan_retries_once_then_raises(store_in_tmp, monkeypatch):
     with pytest.raises(scan.ScanError):
         await scan.run_scan()
     assert calls["n"] == 2  # initial + one retry
+
+
+async def test_run_scan_dedupes_within_batch(store_in_tmp, monkeypatch):
+    # Same URL twice in one reply -> collapsed to a single match.
+    payload = (
+        '[{"title":"SRE","company":"Acme","url":"https://x.io/1","fit_score":8},'
+        '{"title":"SRE (dup)","company":"Acme","url":"https://x.io/1","fit_score":7}]'
+    )
+    monkeypatch.setattr(agent, "run_turn", _fake_reply(payload))
+    matches = await scan.run_scan()
+    assert len(matches) == 1
