@@ -214,6 +214,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _allowed(update):
         await query.answer("Private bot.", show_alert=True)
         return
+    data = query.data or ""
+    if data.startswith("job:"):
+        await _on_job_action(update, ctx, data)
+        return
     if query.data == "reset_context":
         _clear_session(update.effective_chat.id)
         await query.answer("Conversation cleared ✅")
@@ -339,6 +343,67 @@ async def _send_job_card(bot, chat_id: int, job: dict) -> None:
     ]])
     await bot.send_message(
         chat_id, _job_card_html(job), parse_mode="HTML", reply_markup=kb)
+
+
+async def _on_job_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    query = update.callback_query
+    try:
+        _, action, jid = data.split(":", 2)
+    except ValueError:
+        await query.answer()
+        return
+    job = jobs_store.get(jid)
+    if not job:
+        await query.answer("That job is no longer available.", show_alert=True)
+        return
+
+    if action == "skip":
+        jobs_store.set_state(jid, "skipped")
+        await query.answer("Skipped ⏭")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001 - message too old / unchanged
+            pass
+        return
+
+    if action == "apply":
+        await query.answer("Tailoring your resume…")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001
+            pass
+        jobs_store.set_state(jid, "applied")
+        await _generate_resume_for(ctx, update.effective_chat.id, job)
+
+
+async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job: dict) -> None:
+    session_id = load_session_id(chat_id)
+    before = _resume_snapshot()
+    prompt = (
+        "The user chose to apply to this job from a discovery scan. Build a tailored "
+        "resume for it, following ALL your resume rules (never fabricate).\n\n"
+        f"Job title: {job.get('title')}\n"
+        f"Company: {job.get('company')}\n"
+        f"Location: {job.get('location')}\n"
+        f"Link: {job.get('url')}\n\n"
+        "If the link is reachable, WebFetch it to read the full JD; if it's blocked, "
+        "tailor from the details above and the user's memory. Save the resume JSON to "
+        "resumes/ as usual so the PDF is generated, then briefly tell me what you "
+        "emphasized and any real gaps."
+    )
+    typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
+    try:
+        text, session_id = await run_turn(prompt, session_id)
+    except Exception as e:  # noqa: BLE001
+        log.exception("resume generation failed")
+        await ctx.bot.send_message(chat_id, f"⚠️ Couldn't build the resume: {e}")
+        return
+    finally:
+        typing.cancel()
+
+    save_session_id(chat_id, session_id)
+    await _send_chat(ctx.bot, chat_id, text)
+    await _deliver_changed_resumes(ctx.bot, chat_id, before)
 
 
 async def _do_scan(bot, chat_id: int, manual: bool) -> None:
