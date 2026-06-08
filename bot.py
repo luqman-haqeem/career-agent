@@ -136,15 +136,19 @@ def _allowed(update: Update) -> bool:
                 and update.effective_user.id in config.ALLOWED_USER_IDS)
 
 
-async def _send(update: Update, text: str) -> None:
-    """Send a reply rendered as Telegram HTML, with a plain-text fallback."""
+async def _send_chat(bot, chat_id: int, text: str) -> None:
+    """Send text rendered as Telegram HTML, with a plain-text fallback."""
     for piece in telegram_format.chunk(text):
         try:
-            await update.message.reply_text(
-                telegram_format.to_telegram_html(piece), parse_mode="HTML")
+            await bot.send_message(
+                chat_id, telegram_format.to_telegram_html(piece), parse_mode="HTML")
         except Exception as e:  # noqa: BLE001 - bad markup etc.: degrade gracefully
             log.warning("HTML send failed (%s); falling back to plain text", e)
-            await update.message.reply_text(telegram_format.to_plain(piece))
+            await bot.send_message(chat_id, telegram_format.to_plain(piece))
+
+
+async def _send(update: Update, text: str) -> None:
+    await _send_chat(update.get_bot(), update.effective_chat.id, text)
 
 
 def _resume_snapshot() -> dict:
@@ -253,15 +257,19 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     await _deliver_new_files(update, before)
 
 
-async def _send_doc(update: Update, path: Path) -> None:
+async def _send_doc_chat(bot, chat_id: int, path: Path) -> None:
     try:
         with open(path, "rb") as fh:
-            await update.message.reply_document(document=fh, filename=path.name)
+            await bot.send_document(chat_id, document=fh, filename=path.name)
     except Exception as e:  # noqa: BLE001
         log.warning("could not send %s: %s", path, e)
 
 
-async def _deliver_new_files(update: Update, before: dict) -> None:
+async def _send_doc(update: Update, path: Path) -> None:
+    await _send_doc_chat(update.get_bot(), update.effective_chat.id, path)
+
+
+async def _deliver_changed_resumes(bot, chat_id: int, before: dict) -> None:
     """Render any new/updated resume JSON to PDF and send it; send other docs.
 
     Compares mtimes so an *updated* resume (same filename) is re-rendered and
@@ -277,15 +285,21 @@ async def _deliver_new_files(update: Update, before: dict) -> None:
         if ext == ".json":
             try:
                 pdf = await asyncio.to_thread(render.render_json_to_pdf, path)
-                await _send_doc(update, pdf)
+                await _send_doc_chat(bot, chat_id, pdf)
             except Exception as e:  # noqa: BLE001
                 log.warning("PDF render failed for %s: %s", name, e)
-                await update.message.reply_text(
+                await bot.send_message(
+                    chat_id,
                     "⚠️ I built your resume but couldn't render the PDF. "
                     "Sending the data file instead.")
-            await _send_doc(update, path)  # JSON Resume file (portable)
+            await _send_doc_chat(bot, chat_id, path)  # JSON Resume file (portable)
         elif ext in SEND_BACK_EXT:
-            await _send_doc(update, path)
+            await _send_doc_chat(bot, chat_id, path)
+
+
+async def _deliver_new_files(update: Update, before: dict) -> None:
+    await _deliver_changed_resumes(
+        update.get_bot(), update.effective_chat.id, before)
 
 
 def _safe_name(name: str) -> str:
