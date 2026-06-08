@@ -1,17 +1,22 @@
 """Telegram front-end for the Career Agent (runs on your Claude subscription)."""
 import asyncio
+import datetime as dt
+import html
 import json
 import logging
 import re
 import shutil
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
 import config
+import jobs_store
 import render
+import scan
 import telegram_format
 from agent import run_turn
 
@@ -302,6 +307,80 @@ async def _deliver_new_files(update: Update, before: dict) -> None:
         update.get_bot(), update.effective_chat.id, before)
 
 
+# --- Job discovery ---------------------------------------------------------
+def _job_card_html(job: dict) -> str:
+    title = html.escape(job.get("title", "Role"))
+    company = html.escape(job.get("company", ""))
+    location = html.escape(job.get("location", "") or "—")
+    score = job.get("fit_score")
+    score_line = f"Fit <b>{score}/10</b>" if score is not None else "Fit: n/a"
+    why_fit = html.escape(job.get("why_fit", "") or "")
+    why_aligns = html.escape(job.get("why_aligns", "") or "")
+    url = html.escape(job.get("url", ""))
+    lines = [f"<b>{title}</b> @ {company} · {location}", score_line]
+    if why_fit:
+        lines.append(f"💪 {why_fit}")
+    if why_aligns:
+        lines.append(f"🎯 {why_aligns}")
+    if url:
+        lines.append(f'🔗 <a href="{url}">View posting</a>')
+    return "\n".join(lines)
+
+
+async def _send_job_card(bot, chat_id: int, job: dict) -> None:
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📄 Apply", callback_data=f"job:apply:{job['id']}"),
+        InlineKeyboardButton("⏭ Skip", callback_data=f"job:skip:{job['id']}"),
+    ]])
+    await bot.send_message(
+        chat_id, _job_card_html(job), parse_mode="HTML", reply_markup=kb)
+
+
+async def _do_scan(bot, chat_id: int, manual: bool) -> None:
+    try:
+        matches = await scan.run_scan()
+    except scan.ScanError as e:
+        log.warning("scan failed: %s", e)
+        if manual:
+            await bot.send_message(chat_id, f"⚠️ Scan failed — {e}. Try again later.")
+        return
+    if not matches:
+        if manual or not config.SILENT_WHEN_EMPTY:
+            await bot.send_message(chat_id, "🔍 No new strong matches this time.")
+        return
+    await bot.send_message(chat_id, f"🔍 Found {len(matches)} new match(es):")
+    for job in matches:
+        await _send_job_card(bot, chat_id, job)
+
+
+def _owner_chat_id() -> int:
+    if config.OWNER_CHAT_ID:
+        return config.OWNER_CHAT_ID
+    if len(config.ALLOWED_USER_IDS) == 1:
+        return next(iter(config.ALLOWED_USER_IDS))
+    return 0
+
+
+async def _scheduled_scan(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Daily timer; only actually scans on configured weekdays (Monday=0)."""
+    today = dt.datetime.now(ZoneInfo(config.SCAN_TZ)).weekday()
+    if today not in config.SCAN_WEEKDAYS:
+        return
+    chat_id = _owner_chat_id()
+    if not chat_id:
+        log.warning("Scheduled scan skipped: set OWNER_CHAT_ID in .env.")
+        return
+    await _do_scan(ctx.bot, chat_id, manual=False)
+
+
+async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _allowed(update):
+        await update.message.reply_text("Sorry — this is a private bot.")
+        return
+    await update.message.reply_text("🔍 Scanning for jobs… this can take a minute.")
+    await _do_scan(ctx.bot, update.effective_chat.id, manual=True)
+
+
 def _safe_name(name: str) -> str:
     base = Path(name or "").name or "upload"
     return re.sub(r"[^A-Za-z0-9._-]", "_", base)[:80]
@@ -436,6 +515,20 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    app.add_handler(CommandHandler("scan", scan_cmd))
+
+    if config.JOB_DISCOVERY_ENABLED:
+        if app.job_queue is None:
+            log.warning("JobQueue unavailable — install python-telegram-bot[job-queue]. "
+                        "Scheduled scans disabled; /scan still works.")
+        else:
+            app.job_queue.run_daily(
+                _scheduled_scan,
+                time=dt.time(hour=config.SCAN_HOUR, tzinfo=ZoneInfo(config.SCAN_TZ)),
+                name="job-discovery-scan",
+            )
+            log.info("Job discovery scheduled daily at %02d:00 %s on weekdays %s.",
+                     config.SCAN_HOUR, config.SCAN_TZ, sorted(config.SCAN_WEEKDAYS))
 
     backend_desc = ("Claude subscription (claude_cli)" if config.AI_BACKEND != "opencode"
                     else f"OpenCode (model: {config.OPENCODE_MODEL or 'default'})")
