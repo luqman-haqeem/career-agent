@@ -17,8 +17,11 @@ services:
       - ./data:/app/data
       # Keep CLAUDE.md edits live without rebuilding.
       - ./CLAUDE.md:/app/CLAUDE.md:ro
-      # Subscription auth, read-only seed. Never baked into the image.
-      - ${HOME}/.claude/.credentials.json:/seed/credentials.json:ro
+      # Subscription auth, read-only seed. Never baked into the image. The whole
+      # ~/.claude dir is mounted (not just the file) so the container sees the
+      # host CLI's atomic credential refreshes; the entrypoint mirrors the latest
+      # token in (see docker/entrypoint.sh). Only .credentials.json is read.
+      - ${HOME}/.claude:/seed:ro
       # Container's own isolated Claude state (sessions etc.), persisted so
       # conversation continuity survives restarts.
       - claude_state:/home/appuser/.claude

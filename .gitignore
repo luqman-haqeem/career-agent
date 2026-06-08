@@ -11,9 +11,14 @@ resumes/
 uploads/
 memory/profile.md
 memory/goals.md
+# Private corrections log (the .example template is shipped instead).
+memory/corrections.md
 # Ignore the private contents but keep the folder structure (.gitkeep) so a
 # fresh clone has the expected layout.
 memory/experiences/*
 !memory/experiences/.gitkeep
 memory/projects/*
 !memory/projects/.gitkeep
+
+# Internal design docs / planning notes — not for the public repo.
+docs/superpowers/

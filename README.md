@@ -20,6 +20,12 @@ Anthropic API key and no per-token bill.** Usage counts against your subscriptio
   names the real gaps.
 - **Tailored resume** — builds a resume for a JD strictly from what it knows about
   you, and sends it back as a file.
+- **Resume critique** — ask it to score a generated resume against a JD; you get a
+  /100 with how five reader types (ATS bot → technical reviewer) see it and the
+  top fixes.
+- **Stays honest over time** — a corrections log remembers any fact you've fixed,
+  and metrics carry provenance (verified / self-reported / estimate) so nothing
+  gets inflated.
 - **No fabrication** — a hard rule in `CLAUDE.md`; gaps are flagged, not faked.
 - Auto-apply is intentionally **not** included.
 
@@ -107,9 +113,11 @@ What's mounted (see `docker-compose.yml`):
 - a named volume `claude_state` → the container's own Claude session state.
 
 Notes:
-- The container refreshes its own access token from your refresh token; it does
-  not write back to your host credentials. If you log out/in on the host, run
-  `docker compose down && docker compose up -d` to re-seed.
+- **Auto-reseed:** the container mirrors your host Claude login (`~/.claude` is
+  mounted read-only) every few minutes, so its token never goes stale — no manual
+  re-seeding after you log in or use `claude` on the host. It still self-refreshes
+  on its own when the host is idle/off. Tune the interval with `RESEED_INTERVAL`
+  (seconds, default 300) in `.env`.
 - It's still single-user — keep `ALLOWED_USER_IDS` set in `.env`.
 
 ## Where things live
@@ -120,6 +128,7 @@ Notes:
 | `memory/goals.md` | short/long-term goals, targets |
 | `memory/experiences/` | one structured CV point per file |
 | `memory/projects/` | personal projects |
+| `memory/corrections.md` | facts you've corrected — never repeated |
 | `resumes/` | generated, tailored resumes |
 | `data/sessions/` | per-chat Claude session id |
 
