@@ -91,3 +91,43 @@ def _coerce(m: dict) -> dict:
 
 def parse_matches(text: str) -> list:
     return [_coerce(m) for m in _extract_array(text) if valid_match(m)]
+
+
+class ScanError(RuntimeError):
+    """A scan failed after a retry (agent error or unparseable output)."""
+
+
+async def _ask_agent() -> str:
+    seen_labels = jobs_store.recent_labels()
+    prompt = build_prompt(seen_labels)
+    reply, _ = await agent.run_turn(prompt, session_id=None)
+    return reply
+
+
+async def run_scan() -> list:
+    """Run one scan. Returns new (unseen) strong matches, already recorded as 'offered'.
+
+    Raises ScanError if the agent fails twice in a row.
+    """
+    try:
+        reply = await _ask_agent()
+    except Exception:  # noqa: BLE001 - retry once on any backend error
+        try:
+            reply = await _ask_agent()
+        except Exception as e:  # noqa: BLE001
+            raise ScanError(str(e)) from e
+
+    seen = jobs_store.seen_ids()
+    fresh = []
+    for m in parse_matches(reply):
+        jid = jobs_store.job_id(m)
+        if jid in seen:
+            continue
+        seen.add(jid)
+        m["id"] = jid
+        fresh.append(m)
+
+    fresh = fresh[:config.MAX_MATCHES_PER_SCAN]
+    for m in fresh:
+        jobs_store.record(m, "offered")
+    return fresh

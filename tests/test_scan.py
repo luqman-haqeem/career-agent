@@ -47,3 +47,69 @@ def test_parse_matches_prose_with_earlier_bracket():
     out = scan.parse_matches(text)
     assert len(out) == 1
     assert out[0]["company"] == "Acme"
+
+
+import importlib
+
+import pytest
+
+import agent
+import config
+
+
+@pytest.fixture
+def store_in_tmp(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "JOBS_STORE", tmp_path / "jobs_seen.json")
+    import jobs_store
+    importlib.reload(jobs_store)
+    importlib.reload(scan)
+    return jobs_store
+
+
+def _fake_reply(jobs_json):
+    async def _run(prompt, session_id=None, files=None):
+        return jobs_json, "sess-1"
+    return _run
+
+
+async def test_run_scan_records_and_returns(store_in_tmp, monkeypatch):
+    payload = ('[{"title":"SRE","company":"Acme","location":"KL",'
+               '"url":"https://x.io/1","fit_score":8,"why_fit":"aws","why_aligns":"pivot"}]')
+    monkeypatch.setattr(agent, "run_turn", _fake_reply(payload))
+    matches = await scan.run_scan()
+    assert len(matches) == 1
+    assert matches[0]["id"] in store_in_tmp.seen_ids()
+
+
+async def test_run_scan_dedupes_on_second_run(store_in_tmp, monkeypatch):
+    payload = ('[{"title":"SRE","company":"Acme","location":"KL",'
+               '"url":"https://x.io/1","fit_score":8,"why_fit":"aws","why_aligns":"pivot"}]')
+    monkeypatch.setattr(agent, "run_turn", _fake_reply(payload))
+    first = await scan.run_scan()
+    assert len(first) == 1
+    second = await scan.run_scan()  # same job returned again
+    assert second == []
+
+
+async def test_run_scan_caps_to_max(store_in_tmp, monkeypatch):
+    monkeypatch.setattr(config, "MAX_MATCHES_PER_SCAN", 1)
+    payload = (
+        '[{"title":"A","company":"C1","url":"https://x.io/1","fit_score":8},'
+        '{"title":"B","company":"C2","url":"https://x.io/2","fit_score":7}]'
+    )
+    monkeypatch.setattr(agent, "run_turn", _fake_reply(payload))
+    matches = await scan.run_scan()
+    assert len(matches) == 1
+
+
+async def test_run_scan_retries_once_then_raises(store_in_tmp, monkeypatch):
+    calls = {"n": 0}
+
+    async def _boom(prompt, session_id=None, files=None):
+        calls["n"] += 1
+        raise RuntimeError("cli down")
+
+    monkeypatch.setattr(agent, "run_turn", _boom)
+    with pytest.raises(scan.ScanError):
+        await scan.run_scan()
+    assert calls["n"] == 2  # initial + one retry
