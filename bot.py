@@ -312,7 +312,11 @@ async def _deliver_new_files(update: Update, before: dict) -> None:
 
 
 # --- Job discovery ---------------------------------------------------------
-_SCAN_TZ = ZoneInfo(config.SCAN_TZ)  # validated at import; reused by scheduler + scan gate
+try:
+    _SCAN_TZ = ZoneInfo(config.SCAN_TZ)  # reused by scheduler + scan-day gate
+except Exception:  # noqa: BLE001 - bad SCAN_TZ shouldn't crash the whole bot
+    log.warning("Invalid SCAN_TZ %r — falling back to UTC", config.SCAN_TZ)
+    _SCAN_TZ = ZoneInfo("UTC")
 _in_flight_applies: set = set()  # job ids currently generating a resume (double-tap guard)
 
 
@@ -409,7 +413,10 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
         text, session_id = await run_turn(prompt, session_id)
     except Exception as e:  # noqa: BLE001
         log.exception("resume generation failed")
-        await ctx.bot.send_message(chat_id, f"⚠️ Couldn't build the resume: {e}")
+        await ctx.bot.send_message(
+            chat_id,
+            f"⚠️ Couldn't build the resume: {e}\n\n"
+            f"You can still apply — send me the job link and I'll tailor one.")
         return
     finally:
         typing.cancel()
