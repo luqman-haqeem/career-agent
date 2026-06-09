@@ -80,5 +80,10 @@ SILENT_WHEN_EMPTY = os.getenv("SILENT_WHEN_EMPTY", "true").strip().lower() != "f
 # Chat to DM scheduled matches to. 0 = auto-detect when exactly one user is allowed.
 OWNER_CHAT_ID = int(os.getenv("OWNER_CHAT_ID", "0"))
 
+# Preferred job boards the scan checks FIRST (comma-separated URLs), in addition to
+# general web search. Add your favourite boards here.
+_scan_sources = os.getenv("SCAN_SOURCES", "https://jobs.developerkaki.my/").strip()
+SCAN_SOURCES = [s.strip() for s in _scan_sources.split(",") if s.strip()]
+
 # Where seen/decided jobs are persisted (dedup is authoritative here).
 JOBS_STORE = BASE_DIR / "data" / "jobs_seen.json"

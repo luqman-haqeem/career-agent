@@ -14,8 +14,12 @@ SCAN_PROMPT = """You are running an automated JOB DISCOVERY scan for the user.
 
 Do this:
 1. Read memory/profile.md and memory/goals.md with your Read tool.
-2. Use WebSearch to find candidate openings matching the user's target roles and
-   preferred locations from goals.md. Run a few focused searches.
+2. Find candidate openings two ways:
+   a. ALWAYS check these preferred job boards FIRST — WebFetch each and read its
+      current listings for relevant roles:
+{sources}
+   b. ALSO use WebSearch for the user's target roles + preferred locations from
+      goals.md. Run a few focused searches.
 3. For EACH promising candidate, WebFetch the posting URL and VERIFY before keeping it.
    Drop the candidate unless ALL of these hold:
    - LIVE: it is a CURRENTLY OPEN posting. Drop anything expired, closed, filled,
@@ -48,7 +52,9 @@ return exactly: []
 
 def build_prompt(seen_labels: list) -> str:
     seen = "\n".join(f"- {s}" for s in seen_labels) if seen_labels else "  (none yet)"
-    return SCAN_PROMPT.format(seen=seen)
+    sources = ("\n".join(f"      - {u}" for u in config.SCAN_SOURCES)
+               if config.SCAN_SOURCES else "      (none configured)")
+    return SCAN_PROMPT.format(seen=seen, sources=sources)
 
 
 def _extract_array(text: str):
