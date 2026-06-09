@@ -14,13 +14,25 @@ SCAN_PROMPT = """You are running an automated JOB DISCOVERY scan for the user.
 
 Do this:
 1. Read memory/profile.md and memory/goals.md with your Read tool.
-2. Use WebSearch to find CURRENT job openings matching the user's target roles and
+2. Use WebSearch to find candidate openings matching the user's target roles and
    preferred locations from goals.md. Run a few focused searches.
-3. Judge each opening STRICTLY against the user's profile and goals:
-   - Keep ONLY strong matches: clear relevance to a target role AND it must pass the
-     user's dealbreakers (work arrangement + location) in goals.md.
-   - Drop weak or partial fits. When in doubt, drop it.
-4. Do NOT resurface anything the user was already shown. Already shown:
+3. For EACH promising candidate, WebFetch the posting URL and VERIFY before keeping it.
+   Drop the candidate unless ALL of these hold:
+   - LIVE: it is a CURRENTLY OPEN posting. Drop anything expired, closed, filled,
+     dated in the past, or marked "no longer accepting applications" / removed. If
+     you cannot fetch the page to confirm it is open, DROP it.
+   - REQUIREMENTS MET: read the stated requirements. The user is pivoting INTO
+     DevOps/SRE from a backend/software background and does NOT yet have several
+     years of dedicated DevOps/SRE/Kubernetes/Terraform production experience. Drop
+     a posting if it hard-requires a minimum number of years of experience the user
+     doesn't meet, or lists must-have skills the user clearly lacks. KEEP roles open
+     to a strong backend engineer transitioning into platform/DevOps (goals.md
+     targets DevOps/Platform/SRE roles that value a backend background). Never assume
+     experience that isn't in memory.
+   - DEALBREAKERS: it passes the user's work-arrangement + location dealbreakers.
+4. Judge each VERIFIED opening STRICTLY. Keep ONLY strong matches; drop weak or
+   partial fits and anything you are unsure about.
+5. Do NOT resurface anything the user was already shown. Already shown:
 {seen}
 
 Return ONLY a JSON array — no prose, no markdown, no code fences. Each element:
@@ -28,8 +40,9 @@ Return ONLY a JSON array — no prose, no markdown, no code fences. Each element
   "fit_score": <integer 1-10>, "why_fit": "<=140 chars, concrete",
   "why_aligns": "<=140 chars: which goals/dealbreakers it hits"}}
 
-Only include openings with a real, working application URL. If there are no strong
-new matches, return exactly: []
+Only include CURRENTLY-OPEN openings, with a real working application URL, whose
+stated requirements the user actually meets. If there are no strong new matches,
+return exactly: []
 """
 
 
