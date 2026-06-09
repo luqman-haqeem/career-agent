@@ -1,17 +1,22 @@
 """Telegram front-end for the Career Agent (runs on your Claude subscription)."""
 import asyncio
+import datetime as dt
+import html
 import json
 import logging
 import re
 import shutil
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
 import config
+import jobs_store
 import render
+import scan
 import telegram_format
 from agent import run_turn
 
@@ -136,15 +141,19 @@ def _allowed(update: Update) -> bool:
                 and update.effective_user.id in config.ALLOWED_USER_IDS)
 
 
-async def _send(update: Update, text: str) -> None:
-    """Send a reply rendered as Telegram HTML, with a plain-text fallback."""
+async def _send_chat(bot, chat_id: int, text: str) -> None:
+    """Send text rendered as Telegram HTML, with a plain-text fallback."""
     for piece in telegram_format.chunk(text):
         try:
-            await update.message.reply_text(
-                telegram_format.to_telegram_html(piece), parse_mode="HTML")
+            await bot.send_message(
+                chat_id, telegram_format.to_telegram_html(piece), parse_mode="HTML")
         except Exception as e:  # noqa: BLE001 - bad markup etc.: degrade gracefully
             log.warning("HTML send failed (%s); falling back to plain text", e)
-            await update.message.reply_text(telegram_format.to_plain(piece))
+            await bot.send_message(chat_id, telegram_format.to_plain(piece))
+
+
+async def _send(update: Update, text: str) -> None:
+    await _send_chat(update.get_bot(), update.effective_chat.id, text)
 
 
 def _resume_snapshot() -> dict:
@@ -205,6 +214,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _allowed(update):
         await query.answer("Private bot.", show_alert=True)
         return
+    data = query.data or ""
+    if data.startswith("job:"):
+        await _on_job_action(update, ctx, data)
+        return
     if query.data == "reset_context":
         _clear_session(update.effective_chat.id)
         await query.answer("Conversation cleared ✅")
@@ -253,15 +266,19 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     await _deliver_new_files(update, before)
 
 
-async def _send_doc(update: Update, path: Path) -> None:
+async def _send_doc_chat(bot, chat_id: int, path: Path) -> None:
     try:
         with open(path, "rb") as fh:
-            await update.message.reply_document(document=fh, filename=path.name)
+            await bot.send_document(chat_id, document=fh, filename=path.name)
     except Exception as e:  # noqa: BLE001
         log.warning("could not send %s: %s", path, e)
 
 
-async def _deliver_new_files(update: Update, before: dict) -> None:
+async def _send_doc(update: Update, path: Path) -> None:
+    await _send_doc_chat(update.get_bot(), update.effective_chat.id, path)
+
+
+async def _deliver_changed_resumes(bot, chat_id: int, before: dict) -> None:
     """Render any new/updated resume JSON to PDF and send it; send other docs.
 
     Compares mtimes so an *updated* resume (same filename) is re-rendered and
@@ -277,15 +294,186 @@ async def _deliver_new_files(update: Update, before: dict) -> None:
         if ext == ".json":
             try:
                 pdf = await asyncio.to_thread(render.render_json_to_pdf, path)
-                await _send_doc(update, pdf)
+                await _send_doc_chat(bot, chat_id, pdf)
             except Exception as e:  # noqa: BLE001
                 log.warning("PDF render failed for %s: %s", name, e)
-                await update.message.reply_text(
+                await bot.send_message(
+                    chat_id,
                     "⚠️ I built your resume but couldn't render the PDF. "
                     "Sending the data file instead.")
-            await _send_doc(update, path)  # JSON Resume file (portable)
+            await _send_doc_chat(bot, chat_id, path)  # JSON Resume file (portable)
         elif ext in SEND_BACK_EXT:
-            await _send_doc(update, path)
+            await _send_doc_chat(bot, chat_id, path)
+
+
+async def _deliver_new_files(update: Update, before: dict) -> None:
+    await _deliver_changed_resumes(
+        update.get_bot(), update.effective_chat.id, before)
+
+
+# --- Job discovery ---------------------------------------------------------
+try:
+    _SCAN_TZ = ZoneInfo(config.SCAN_TZ)  # reused by scheduler + scan-day gate
+except Exception:  # noqa: BLE001 - bad SCAN_TZ shouldn't crash the whole bot
+    log.warning("Invalid SCAN_TZ %r — falling back to UTC", config.SCAN_TZ)
+    _SCAN_TZ = ZoneInfo("UTC")
+_in_flight_applies: set = set()  # job ids currently generating a resume (double-tap guard)
+
+
+def _job_card_html(job: dict) -> str:
+    title = html.escape(job.get("title", "Role"))
+    company = html.escape(job.get("company", ""))
+    location = html.escape(job.get("location", "") or "—")
+    score = job.get("fit_score")
+    score_line = f"Fit <b>{score}/10</b>" if score is not None else "Fit: n/a"
+    why_fit = html.escape(job.get("why_fit", "") or "")
+    why_aligns = html.escape(job.get("why_aligns", "") or "")
+    url = html.escape(job.get("url", "") or "")
+    if url and not url.lower().startswith(("https://", "http://")):
+        url = ""  # drop non-http schemes (e.g. javascript:) before putting in href
+    lines = [f"<b>{title}</b> @ {company} · {location}", score_line]
+    if why_fit:
+        lines.append(f"💪 {why_fit}")
+    if why_aligns:
+        lines.append(f"🎯 {why_aligns}")
+    if url:
+        lines.append(f'🔗 <a href="{url}">View posting</a>')
+    return "\n".join(lines)
+
+
+async def _send_job_card(bot, chat_id: int, job: dict) -> None:
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📄 Apply", callback_data=f"job:apply:{job['id']}"),
+        InlineKeyboardButton("⏭ Skip", callback_data=f"job:skip:{job['id']}"),
+    ]])
+    await bot.send_message(
+        chat_id, _job_card_html(job), parse_mode="HTML", reply_markup=kb)
+
+
+async def _on_job_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: str) -> None:
+    query = update.callback_query
+    try:
+        _, action, jid = data.split(":", 2)
+    except ValueError:
+        await query.answer()
+        return
+    job = jobs_store.get(jid)
+    if not job:
+        await query.answer("That job is no longer available.", show_alert=True)
+        return
+
+    if action == "skip":
+        jobs_store.set_state(jid, "skipped")
+        await query.answer("Skipped ⏭")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001 - message too old / unchanged
+            pass
+        return
+
+    if action == "apply":
+        if jid in _in_flight_applies:
+            await query.answer("Already generating — please wait.", show_alert=True)
+            return
+        await query.answer("Tailoring your resume…")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001
+            pass
+        _in_flight_applies.add(jid)
+        try:
+            await _generate_resume_for(ctx, update.effective_chat.id, job, jid)
+        finally:
+            _in_flight_applies.discard(jid)
+        return
+
+    await query.answer()  # unknown action — dismiss the spinner
+
+
+async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job: dict, jid: str) -> None:
+    session_id = load_session_id(chat_id)
+    before = _resume_snapshot()
+    prompt = (
+        "The user chose to apply to this job from a discovery scan. Build a tailored "
+        "resume for it, following ALL your resume rules (never fabricate).\n\n"
+        f"Job title: {job.get('title')}\n"
+        f"Company: {job.get('company')}\n"
+        f"Location: {job.get('location')}\n"
+        f"Link: {job.get('url')}\n\n"
+        "If the link is reachable, WebFetch it to read the full JD; if it's blocked, "
+        "tailor from the details above and the user's memory. Save the resume JSON to "
+        "resumes/ as usual so the PDF is generated, then briefly tell me what you "
+        "emphasized and any real gaps."
+    )
+    await ctx.bot.send_message(
+        chat_id,
+        f"📄 Tailoring your resume for {job.get('title')} @ {job.get('company')} — about a minute…")
+    typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
+    try:
+        text, session_id = await run_turn(prompt, session_id)
+    except Exception as e:  # noqa: BLE001
+        log.exception("resume generation failed")
+        await ctx.bot.send_message(
+            chat_id,
+            f"⚠️ Couldn't build the resume: {e}\n\n"
+            f"You can still apply — send me the job link and I'll tailor one.")
+        return
+    finally:
+        typing.cancel()
+
+    save_session_id(chat_id, session_id)
+    jobs_store.set_state(jid, "applied")
+    await _send_chat(ctx.bot, chat_id, text)
+    await _deliver_changed_resumes(ctx.bot, chat_id, before)
+
+
+async def _do_scan(bot, chat_id: int, manual: bool) -> None:
+    try:
+        matches = await scan.run_scan()
+    except scan.ScanError as e:
+        log.warning("scan failed: %s", e)
+        if manual:
+            await bot.send_message(chat_id, f"⚠️ Scan failed — {e}. Try again later.")
+        return
+    if not matches:
+        if manual or not config.SILENT_WHEN_EMPTY:
+            await bot.send_message(chat_id, "🔍 No new strong matches this time.")
+        return
+    await bot.send_message(chat_id, f"🔍 Found {len(matches)} new match(es):")
+    for job in matches:
+        await _send_job_card(bot, chat_id, job)
+
+
+def _owner_chat_id() -> int:
+    if config.OWNER_CHAT_ID:
+        return config.OWNER_CHAT_ID
+    if len(config.ALLOWED_USER_IDS) == 1:
+        return next(iter(config.ALLOWED_USER_IDS))
+    return 0
+
+
+async def _scheduled_scan(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Daily timer; only actually scans on configured weekdays (Monday=0)."""
+    today = dt.datetime.now(_SCAN_TZ).weekday()
+    if today not in config.SCAN_WEEKDAYS:
+        return
+    chat_id = _owner_chat_id()
+    if not chat_id:
+        log.warning("Scheduled scan skipped: set OWNER_CHAT_ID in .env.")
+        return
+    await _do_scan(ctx.bot, chat_id, manual=False)
+
+
+async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _allowed(update):
+        await update.message.reply_text("Sorry — this is a private bot.")
+        return
+    await update.message.reply_text("🔍 Scanning for jobs… this can take a minute.")
+    try:
+        await _do_scan(ctx.bot, update.effective_chat.id, manual=True)
+    except Exception as e:  # noqa: BLE001
+        log.exception("scan_cmd failed")
+        await update.message.reply_text(f"⚠️ Scan error — {e}. Try again later.")
 
 
 def _safe_name(name: str) -> str:
@@ -404,6 +592,7 @@ def main() -> None:
 
     async def _set_commands(application: Application) -> None:
         await application.bot.set_my_commands([
+            ("scan", "Search for new job matches now"),
             ("status", "Show conversation size + reset button"),
             ("reset", "Start a fresh conversation (memory kept)"),
             ("help", "How to use me"),
@@ -422,6 +611,20 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    app.add_handler(CommandHandler("scan", scan_cmd))
+
+    if config.JOB_DISCOVERY_ENABLED:
+        if app.job_queue is None:
+            log.warning("JobQueue unavailable — install python-telegram-bot[job-queue]. "
+                        "Scheduled scans disabled; /scan still works.")
+        else:
+            app.job_queue.run_daily(
+                _scheduled_scan,
+                time=dt.time(hour=config.SCAN_HOUR, tzinfo=_SCAN_TZ),
+                name="job-discovery-scan",
+            )
+            log.info("Job discovery scheduled daily at %02d:00 %s on weekdays %s.",
+                     config.SCAN_HOUR, config.SCAN_TZ, sorted(config.SCAN_WEEKDAYS))
 
     backend_desc = ("Claude subscription (claude_cli)" if config.AI_BACKEND != "opencode"
                     else f"OpenCode (model: {config.OPENCODE_MODEL or 'default'})")
