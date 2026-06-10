@@ -7,6 +7,7 @@ venv/
 
 # Private data — do not commit
 data/sessions/
+data/jobs_seen.json
 resumes/
 uploads/
 memory/profile.md
