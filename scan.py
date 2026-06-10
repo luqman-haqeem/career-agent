@@ -24,6 +24,11 @@ Do this:
    - LIVE (hard gate): it must be a CURRENTLY OPEN posting. DROP anything expired,
      closed, filled, dated in the past, or marked "no longer accepting applications"
      / removed. If you cannot fetch the page to confirm it is open, DROP it.
+   - EXACT URL (hard gate): record the COMPLETE url you actually fetched and
+     confirmed live — copy it VERBATIM, including the full path and any slug. NEVER
+     shorten, truncate, strip path segments, drop a trailing slug, or reconstruct a
+     url (e.g. do NOT reduce ".../job/342/jobs-fuzzy-sequence-job-senior-full-stack-
+     engineer" to ".../job/342/"). The url in your output MUST load the live posting.
    - LOCATION (hard gate): it must be in/near the user's preferred area (KL / Cheras
      / Ampang / Klang Valley) OR fully remote. DROP roles clearly elsewhere and not
      remote.
@@ -49,9 +54,10 @@ Return ONLY a JSON array — no prose, no markdown, no code fences. Each element
   "fit_score": <integer 1-10>, "why_fit": "<=140 chars, concrete",
   "why_aligns": "<=140 chars: which goals/dealbreakers it hits"}}
 
-Only include CURRENTLY-OPEN, in-area (or remote) openings with a real working
-application URL, each scored honestly with any gap named in why_fit. If there are
-genuinely no relevant new openings, return exactly: []
+Only include CURRENTLY-OPEN, in-area (or remote) openings with the EXACT working
+application URL you fetched (full path/slug, verbatim), each scored honestly with
+any gap named in why_fit. If there are genuinely no relevant new openings, return
+exactly: []
 """
 
 
