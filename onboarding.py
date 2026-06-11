@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 
 import config
 
+COMPLETE_MARKER = "[[ONBOARDING_COMPLETE]]"
+
 # A profile/goals file with fewer than this many stripped chars is treated as a
 # placeholder stub, not real content.
 _FRESH_CONTENT_THRESHOLD = 80
@@ -81,3 +83,39 @@ def set_status(state: str) -> None:
         out["completed_at"] = _now_iso()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(out), encoding="utf-8")
+
+
+def strip_complete_marker(text: str):
+    """Remove every COMPLETE_MARKER from text; report whether any was present.
+
+    Returns (clean_text, completed: bool).
+    """
+    completed = COMPLETE_MARKER in text
+    clean = text.replace(COMPLETE_MARKER, "").strip()
+    return clean, completed
+
+
+ONBOARDING_KICKOFF = """A brand-new user just started using you for the first
+time. Run a short, friendly ONBOARDING.
+
+1. In 1-2 lines, introduce yourself and what you do: remember their career, judge
+   how well jobs fit them, write tailored honest resumes, and proactively find
+   new openings.
+2. Then interview them ONE question at a time (wait for each answer — do not dump
+   all questions at once). Collect just the essentials:
+   - their name and current role / background
+   - the target role(s) they want next
+   - preferred location + work arrangement (remote / hybrid / onsite) and any
+     dealbreakers
+3. As you learn these, SAVE them into memory/profile.md and memory/goals.md using
+   your normal rules (read-merge-write; never fabricate; ask if a fact is missing
+   rather than guessing).
+4. Once you have the essentials, tell them they're set up and ask them to upload
+   their resume (PDF / DOCX) or a photo so you can pull in their real experience.
+   Keep it warm and concise.
+
+When — and only when — you have finished step 4 (essentials saved and you've asked
+for the resume), end that final message with this exact marker on its own last
+line, nothing after it: """ + COMPLETE_MARKER + """
+Do not output the marker before onboarding is actually finished.
+"""

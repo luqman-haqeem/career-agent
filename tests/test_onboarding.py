@@ -88,3 +88,30 @@ def test_set_status_rejects_invalid_state(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "BASE_DIR", tmp_path)
     with pytest.raises(ValueError):
         onboarding.set_status("bogus")
+
+
+def test_strip_marker_absent():
+    clean, done = onboarding.strip_complete_marker("just a normal reply")
+    assert clean == "just a normal reply"
+    assert done is False
+
+
+def test_strip_marker_present():
+    clean, done = onboarding.strip_complete_marker(
+        "All set! Upload your resume next.\n" + onboarding.COMPLETE_MARKER)
+    assert onboarding.COMPLETE_MARKER not in clean
+    assert clean == "All set! Upload your resume next."
+    assert done is True
+
+
+def test_strip_marker_multiple_occurrences():
+    text = f"{onboarding.COMPLETE_MARKER} mid {onboarding.COMPLETE_MARKER} end"
+    clean, done = onboarding.strip_complete_marker(text)
+    assert onboarding.COMPLETE_MARKER not in clean
+    assert done is True
+
+
+def test_kickoff_prompt_mentions_marker_and_files():
+    assert onboarding.COMPLETE_MARKER in onboarding.ONBOARDING_KICKOFF
+    assert "profile.md" in onboarding.ONBOARDING_KICKOFF
+    assert "goals.md" in onboarding.ONBOARDING_KICKOFF
