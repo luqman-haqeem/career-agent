@@ -254,7 +254,8 @@ async def _keep_typing(bot, chat_id: int) -> None:
         pass
 
 
-async def _launch_onboarding(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+async def _launch_onboarding(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+                             user_message: str = None) -> None:
     """Set status in_progress and run the kickoff turn in the chat's session.
 
     On agent failure, reset to not_started and fall back to the static intro so
@@ -265,7 +266,11 @@ async def _launch_onboarding(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> 
     session_id = load_session_id(chat_id)
     typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
     try:
-        text, session_id = await run_turn(onboarding.ONBOARDING_KICKOFF, session_id)
+        prompt = onboarding.ONBOARDING_KICKOFF
+        if user_message:
+            prompt += (f"\n\nThe user's first message to you was: {user_message!r} — "
+                       "acknowledge it and weave it into the onboarding naturally.")
+        text, session_id = await run_turn(prompt, session_id)
     except Exception:  # noqa: BLE001
         log.exception("onboarding kickoff failed")
         onboarding.set_status("not_started")
@@ -547,7 +552,7 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Sorry — this is a private bot.")
         return
     if onboarding.status() == "not_started" and onboarding.is_fresh():
-        await _launch_onboarding(update, ctx)
+        await _launch_onboarding(update, ctx, user_message=update.message.text)
         return
     await _run_and_reply(update, ctx, update.message.text)
 
