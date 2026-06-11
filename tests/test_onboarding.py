@@ -80,3 +80,11 @@ def test_status_corrupt_file_is_not_started(tmp_path, monkeypatch):
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "onboarding.json").write_text("{not json", encoding="utf-8")
     assert onboarding.status() == "not_started"
+
+
+def test_set_status_rejects_invalid_state(tmp_path, monkeypatch):
+    import config
+    import pytest
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    with pytest.raises(ValueError):
+        onboarding.set_status("bogus")

@@ -64,8 +64,11 @@ def status() -> str:
 
 def set_status(state: str) -> None:
     """Persist onboarding status, stamping started_at / completed_at as needed."""
+    if state not in _VALID:
+        raise ValueError(f"state must be one of {_VALID}, got {state!r}")
+    path = _state_path()
     try:
-        existing = json.loads(_state_path().read_text(encoding="utf-8"))
+        existing = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         existing = {}
     out = {"status": state}
@@ -76,6 +79,5 @@ def set_status(state: str) -> None:
         out["started_at"] = started
     if state == "done":
         out["completed_at"] = _now_iso()
-    path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(out), encoding="utf-8")
