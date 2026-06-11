@@ -1,4 +1,6 @@
 # tests/test_onboarding.py
+import json
+
 import onboarding
 
 
@@ -36,3 +38,45 @@ def test_tiny_stub_profile_still_fresh(tmp_path, monkeypatch):
     mem, _ = _setup_memory(tmp_path, monkeypatch)
     (mem / "profile.md").write_text("hi", encoding="utf-8")
     assert onboarding.is_fresh() is True
+
+
+def test_not_fresh_when_goals_populated(tmp_path, monkeypatch):
+    mem, _ = _setup_memory(tmp_path, monkeypatch)
+    (mem / "goals.md").write_text("# Goals\n" + "Target SRE roles in KL. " * 8,
+                                  encoding="utf-8")
+    assert onboarding.is_fresh() is False
+
+
+def test_status_defaults_not_started(tmp_path, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    assert onboarding.status() == "not_started"
+
+
+def test_set_status_in_progress_records_started_at(tmp_path, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    onboarding.set_status("in_progress")
+    assert onboarding.status() == "in_progress"
+    data = json.loads((tmp_path / "data" / "onboarding.json").read_text())
+    assert data["started_at"]
+
+
+def test_set_status_done_keeps_started_and_adds_completed(tmp_path, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    onboarding.set_status("in_progress")
+    started = json.loads((tmp_path / "data" / "onboarding.json").read_text())["started_at"]
+    onboarding.set_status("done")
+    data = json.loads((tmp_path / "data" / "onboarding.json").read_text())
+    assert onboarding.status() == "done"
+    assert data["started_at"] == started
+    assert data["completed_at"]
+
+
+def test_status_corrupt_file_is_not_started(tmp_path, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "onboarding.json").write_text("{not json", encoding="utf-8")
+    assert onboarding.status() == "not_started"
