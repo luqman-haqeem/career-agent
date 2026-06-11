@@ -15,6 +15,7 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
 
 import config
 import jobs_store
+import onboarding
 import render
 import scan
 import telegram_format
@@ -30,6 +31,16 @@ SEND_BACK_EXT = {".md", ".pdf", ".docx", ".txt"}
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
 log = logging.getLogger("career-agent")
+
+_STATIC_INTRO = (
+    "👋 I'm your Career Agent.\n\n"
+    "Send me:\n"
+    "• your existing resume as a file (PDF / DOCX) or a photo → I read it and pull your real experience into memory\n"
+    "• an experience or project as text → I structure it into a CV point and remember it\n"
+    "• a job description link or pasted text → I assess your fit and draft a tailored resume\n"
+    "• your goals, vision, or long-term plans → I store them\n\n"
+    "I will never invent experience you don't have.\n\n"
+    "Commands: /help  /reset  /onboard")
 
 
 # --- Per-chat session id (Claude conversation continuity) ------------------
@@ -171,16 +182,12 @@ def _resume_snapshot() -> dict:
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id if update.effective_user else "unknown"
     await update.message.reply_text(
-        "👋 I'm your Career Agent.\n\n"
         f"Your Telegram user ID is: {uid}\n"
-        "(Put this in ALLOWED_USER_IDS in .env to keep the bot private.)\n\n"
-        "Send me:\n"
-        "• your existing resume as a file (PDF / DOCX) or a photo → I read it and pull your real experience into memory\n"
-        "• an experience or project as text → I structure it into a CV point and remember it\n"
-        "• a job description link or pasted text → I assess your fit and draft a tailored resume\n"
-        "• your goals, vision, or long-term plans → I store them\n\n"
-        "I will never invent experience you don't have.\n\n"
-        "Commands: /help  /reset")
+        "(Put this in ALLOWED_USER_IDS in .env to keep the bot private.)")
+    if onboarding.is_fresh() and onboarding.status() not in ("in_progress", "done"):
+        await _launch_onboarding(update, ctx)
+        return
+    await update.message.reply_text(_STATIC_INTRO)
 
 
 async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -198,6 +205,13 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     _clear_session(update.effective_chat.id)
     await update.message.reply_text("🧹 Started a fresh conversation. Your long-term memory is untouched.")
+
+
+async def onboard_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _allowed(update):
+        await update.message.reply_text("Sorry — this is a private bot.")
+        return
+    await _launch_onboarding(update, ctx)
 
 
 async def status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -240,6 +254,32 @@ async def _keep_typing(bot, chat_id: int) -> None:
         pass
 
 
+async def _launch_onboarding(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Set status in_progress and run the kickoff turn in the chat's session.
+
+    On agent failure, reset to not_started and fall back to the static intro so
+    the user is never stuck mid-launch.
+    """
+    chat_id = update.effective_chat.id
+    onboarding.set_status("in_progress")
+    session_id = load_session_id(chat_id)
+    typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
+    try:
+        text, session_id = await run_turn(onboarding.ONBOARDING_KICKOFF, session_id)
+    except Exception:  # noqa: BLE001
+        log.exception("onboarding kickoff failed")
+        onboarding.set_status("not_started")
+        await _send(update, _STATIC_INTRO)
+        return
+    finally:
+        typing.cancel()
+    save_session_id(chat_id, session_id)
+    text, completed = onboarding.strip_complete_marker(text)
+    if completed:
+        onboarding.set_status("done")
+    await _send(update, text)
+
+
 async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
                          prompt: str, files=None) -> None:
     """Run one agent turn for this chat and send back text + any new resume.
@@ -262,6 +302,9 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         typing.cancel()
 
     save_session_id(chat_id, session_id)
+    text, completed = onboarding.strip_complete_marker(text)
+    if completed and onboarding.status() == "in_progress":
+        onboarding.set_status("done")
     await _send(update, text)
     await _deliver_new_files(update, before)
 
@@ -503,6 +546,9 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _allowed(update):
         await update.message.reply_text("Sorry — this is a private bot.")
         return
+    if onboarding.status() == "not_started" and onboarding.is_fresh():
+        await _launch_onboarding(update, ctx)
+        return
     await _run_and_reply(update, ctx, update.message.text)
 
 
@@ -597,6 +643,7 @@ def main() -> None:
             ("reset", "Start a fresh conversation (memory kept)"),
             ("help", "How to use me"),
             ("start", "Intro & your Telegram ID"),
+            ("onboard", "Guided setup — re-run anytime"),
         ])
 
     app = (Application.builder()
@@ -606,6 +653,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("onboard", onboard_cmd))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
