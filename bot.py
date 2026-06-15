@@ -368,7 +368,7 @@ except Exception:  # noqa: BLE001 - bad SCAN_TZ shouldn't crash the whole bot
     _SCAN_TZ = ZoneInfo("UTC")
 _in_flight_applies: set = set()  # job ids currently generating a resume (double-tap guard)
 _pending_skip_reason: dict = {}  # chat_id -> jid awaiting a free-text skip reason
-_FALLBACK_SKIP_REASONS = ["Too senior", "Too junior", "Location", "Wrong tech", "Pay too low"]
+_FALLBACK_SKIP_REASONS = ["Too senior", "Too junior", "Location", "Wrong tech"]  # capped at 4 (one row)
 
 
 def _skip_reason_keyboard(jid: str, job: dict) -> InlineKeyboardMarkup:
