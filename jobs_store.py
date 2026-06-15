@@ -67,9 +67,13 @@ def record(job: dict, state: str) -> str:
         "location": job.get("location", ""),
         "url": job.get("url", ""),
         "fit_score": job.get("fit_score"),
-        "skip_reasons": [str(s).strip() for s in (job.get("skip_reasons") or [])
-                         if str(s).strip()],
     })
+    incoming_reasons = [str(s).strip() for s in (job.get("skip_reasons") or [])
+                        if str(s).strip()]
+    if incoming_reasons:
+        entry["skip_reasons"] = incoming_reasons
+    else:
+        entry.setdefault("skip_reasons", [])
     entry.setdefault("first_seen", _now_iso())
     entry.setdefault("state", state)
     data["jobs"][jid] = entry
@@ -78,7 +82,10 @@ def record(job: dict, state: str) -> str:
 
 
 def set_decision(jid: str, state: str, reason: str = None) -> None:
-    """Record a user decision: state (+ optional skip reason) and a timestamp."""
+    """Record a user decision: state (+ optional skip reason) and a timestamp.
+
+    Silent no-op if jid is unknown.
+    """
     data = _load()
     entry = data["jobs"].get(jid)
     if not entry:
@@ -86,6 +93,8 @@ def set_decision(jid: str, state: str, reason: str = None) -> None:
     entry["state"] = state
     if reason:
         entry["reason"] = reason
+    else:
+        entry.pop("reason", None)
     entry["decided_at"] = _now_iso()
     _save(data)
 
@@ -116,12 +125,13 @@ def decisions(limit: int = 40) -> list:
     return out
 
 
-def last_synthesis_at():
+def last_synthesis_at() -> str | None:
     """ISO timestamp of the last preference synthesis, or None."""
     return _load().get("last_synthesis_at")
 
 
 def mark_synthesis() -> None:
+    """Stamp the current time as the last synthesis run."""
     data = _load()
     data["last_synthesis_at"] = _now_iso()
     _save(data)

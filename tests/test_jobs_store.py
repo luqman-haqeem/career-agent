@@ -123,3 +123,23 @@ def test_synthesis_marker_roundtrips(tmp_path, monkeypatch):
     assert js.last_synthesis_at() is not None
     js2 = _fresh_store(tmp_path, monkeypatch)
     assert js2.last_synthesis_at() is not None
+
+
+def test_record_does_not_clobber_skip_reasons_on_rerecord(tmp_path, monkeypatch):
+    js = _fresh_store(tmp_path, monkeypatch)
+    job = {"title": "SRE", "company": "Acme", "url": "https://x.io/1",
+           "skip_reasons": ["Frontend role", "Needs 8y"]}
+    jid = js.record(job, "offered")
+    # Re-record the SAME job without skip_reasons -> must keep the originals.
+    js.record({"title": "SRE", "company": "Acme", "url": "https://x.io/1"}, "offered")
+    assert js.get(jid)["skip_reasons"] == ["Frontend role", "Needs 8y"]
+
+
+def test_set_decision_clears_stale_reason_on_redecision(tmp_path, monkeypatch):
+    js = _fresh_store(tmp_path, monkeypatch)
+    jid = js.record({"title": "SRE", "company": "Acme", "url": "https://x.io/1"}, "offered")
+    js.set_decision(jid, "skipped", "too senior")
+    js.set_decision(jid, "applied")  # re-decide without a reason
+    entry = js.get(jid)
+    assert entry["state"] == "applied"
+    assert "reason" not in entry
