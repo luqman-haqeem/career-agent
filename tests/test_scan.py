@@ -125,3 +125,28 @@ async def test_run_scan_dedupes_within_batch(store_in_tmp, monkeypatch):
     monkeypatch.setattr(agent, "run_turn", _fake_reply(payload))
     matches = await scan.run_scan()
     assert len(matches) == 1
+
+
+def test_coerce_cleans_skip_reasons_list():
+    out = scan.parse_matches(
+        '[{"title":"SRE","company":"Acme","url":"https://x.io/1",'
+        '"skip_reasons":["Frontend role"," Needs 8y ","",123]}]')
+    assert out[0]["skip_reasons"] == ["Frontend role", "Needs 8y"]
+
+
+def test_coerce_skip_reasons_missing_becomes_empty():
+    out = scan.parse_matches('[{"title":"SRE","company":"Acme","url":"https://x.io/1"}]')
+    assert out[0]["skip_reasons"] == []
+
+
+def test_coerce_skip_reasons_non_list_becomes_empty():
+    out = scan.parse_matches(
+        '[{"title":"SRE","company":"Acme","url":"https://x.io/1","skip_reasons":"nope"}]')
+    assert out[0]["skip_reasons"] == []
+
+
+def test_coerce_skip_reasons_caps_at_four():
+    out = scan.parse_matches(
+        '[{"title":"SRE","company":"Acme","url":"https://x.io/1",'
+        '"skip_reasons":["a","b","c","d","e","f"]}]')
+    assert out[0]["skip_reasons"] == ["a", "b", "c", "d"]

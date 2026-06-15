@@ -17,6 +17,7 @@ import config
 import jobs_store
 import onboarding
 import render
+import preferences
 import scan
 import telegram_format
 from agent import run_turn
@@ -366,6 +367,25 @@ except Exception:  # noqa: BLE001 - bad SCAN_TZ shouldn't crash the whole bot
     log.warning("Invalid SCAN_TZ %r — falling back to UTC", config.SCAN_TZ)
     _SCAN_TZ = ZoneInfo("UTC")
 _in_flight_applies: set = set()  # job ids currently generating a resume (double-tap guard)
+_pending_skip_reason: dict = {}  # chat_id -> jid awaiting a free-text skip reason
+_FALLBACK_SKIP_REASONS = ["Too senior", "Too junior", "Location", "Wrong tech"]  # capped at 4 (one row)
+
+
+def _skip_reason_keyboard(jid: str, job: dict) -> InlineKeyboardMarkup:
+    reasons = (job.get("skip_reasons") or _FALLBACK_SKIP_REASONS)[:4]
+    rows, row = [], []
+    for i, r in enumerate(reasons):
+        row.append(InlineKeyboardButton(r[:24], callback_data=f"job:sk:{jid}:{i}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([
+        InlineKeyboardButton("✏️ Other…", callback_data=f"job:sk:{jid}:other"),
+        InlineKeyboardButton("⏭ Skip", callback_data=f"job:sk:{jid}:none"),
+    ])
+    return InlineKeyboardMarkup(rows)
 
 
 def _job_card_html(job: dict) -> str:
@@ -400,22 +420,49 @@ async def _send_job_card(bot, chat_id: int, job: dict) -> None:
 
 async def _on_job_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: str) -> None:
     query = update.callback_query
-    try:
-        _, action, jid = data.split(":", 2)
-    except ValueError:
+    parts = data.split(":")
+    if len(parts) < 3:
         await query.answer()
         return
+    action, jid = parts[1], parts[2]
+    extra = parts[3] if len(parts) > 3 else None
+    _pending_skip_reason.pop(update.effective_chat.id, None)  # user re-engaged a card; drop any half-finished free-text reason
     job = jobs_store.get(jid)
     if not job:
         await query.answer("That job is no longer available.", show_alert=True)
         return
 
     if action == "skip":
-        jobs_store.set_state(jid, "skipped")
+        try:
+            await query.edit_message_reply_markup(reply_markup=_skip_reason_keyboard(jid, job))
+        except Exception:  # noqa: BLE001 - message too old / unchanged
+            pass
+        await query.answer("Why skip it?")
+        return
+
+    if action == "sk":
+        if extra == "other":
+            _pending_skip_reason[update.effective_chat.id] = jid
+            await query.answer("Type your reason 👇")
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:  # noqa: BLE001
+                pass
+            await ctx.bot.send_message(
+                update.effective_chat.id,
+                "Reply with your reason for skipping (one line) and I'll learn from it.")
+            return
+        reason = None
+        if extra is not None and extra.isdigit():
+            reasons = job.get("skip_reasons") or _FALLBACK_SKIP_REASONS
+            i = int(extra)
+            if 0 <= i < len(reasons):
+                reason = reasons[i]
+        jobs_store.set_decision(jid, "skipped", reason)
         await query.answer("Skipped ⏭")
         try:
             await query.edit_message_reply_markup(reply_markup=None)
-        except Exception:  # noqa: BLE001 - message too old / unchanged
+        except Exception:  # noqa: BLE001
             pass
         return
 
@@ -470,12 +517,19 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
         typing.cancel()
 
     save_session_id(chat_id, session_id)
-    jobs_store.set_state(jid, "applied")
+    jobs_store.set_decision(jid, "applied")
     await _send_chat(ctx.bot, chat_id, text)
     await _deliver_changed_resumes(ctx.bot, chat_id, before)
 
 
 async def _do_scan(bot, chat_id: int, manual: bool) -> None:
+    try:
+        note = await preferences.run_synthesis()
+        if note:
+            await bot.send_message(chat_id, f"🧠 {note}")
+    except Exception:  # noqa: BLE001 - learning must never block a scan
+        log.warning("preference synthesis failed", exc_info=True)
+
     try:
         matches = await scan.run_scan()
     except scan.ScanError as e:
@@ -550,6 +604,13 @@ def _docx_to_text(path: Path):
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _allowed(update):
         await update.message.reply_text("Sorry — this is a private bot.")
+        return
+    chat_id = update.effective_chat.id
+    pending_jid = _pending_skip_reason.pop(chat_id, None)
+    if pending_jid:
+        reason = (update.message.text or "").strip()
+        jobs_store.set_decision(pending_jid, "skipped", reason or None)
+        await update.message.reply_text("Got it — noted why you skipped. 👍")
         return
     if onboarding.status() == "not_started" and onboarding.is_fresh():
         await _launch_onboarding(update, ctx, user_message=update.message.text)

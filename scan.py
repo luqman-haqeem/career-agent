@@ -13,7 +13,13 @@ import jobs_store
 SCAN_PROMPT = """You are running an automated JOB DISCOVERY scan for the user.
 
 Do this:
-1. Read memory/profile.md and memory/goals.md with your Read tool.
+1. Read memory/profile.md and memory/goals.md with your Read tool. ALSO read
+   memory/preferences.md if it exists — these are the user's INFERRED preferences
+   from past Apply/Skip choices. Use them ONLY as a SOFT ranking signal: lower the
+   fit_score for patterns the user reliably rejects, and a strong, consistent
+   pattern (e.g. location) may drop a job entirely. The LIVE / LOCATION / EXACT-URL
+   hard gates and honesty always win over preferences — never fabricate or inflate
+   to match a preference.
 2. Find candidate openings two ways:
    a. ALWAYS check these preferred job boards FIRST — WebFetch each and read its
       current listings for relevant roles:
@@ -52,7 +58,13 @@ Do this:
 Return ONLY a JSON array — no prose, no markdown, no code fences. Each element:
 {{"title": "...", "company": "...", "location": "...", "url": "https://...",
   "fit_score": <integer 1-10>, "why_fit": "<=140 chars, concrete",
-  "why_aligns": "<=140 chars: which goals/dealbreakers it hits"}}
+  "why_aligns": "<=140 chars: which goals/dealbreakers it hits",
+  "skip_reasons": ["<=24 chars", "..."]}}
+
+For skip_reasons, give 2-4 SHORT, SPECIFIC reasons a person with THIS user's
+profile might reject THIS exact posting (e.g. "Frontend role", "Needs 8y",
+"Onsite Penang") — concrete to the job, not generic filler. Always include the
+field (use [] only if you truly cannot name any).
 
 Only include CURRENTLY-OPEN, in-area (or remote) openings with the EXACT working
 application URL you fetched (full path/slug, verbatim), each scored honestly with
@@ -116,6 +128,11 @@ def _coerce(m: dict) -> dict:
             m["fit_score"] = int(score.strip())
         except ValueError:
             m["fit_score"] = None
+    reasons = m.get("skip_reasons")
+    if not isinstance(reasons, list):
+        reasons = []
+    clean = [s.strip()[:24] for s in reasons if isinstance(s, str) and s.strip()]
+    m["skip_reasons"] = clean[:4]
     return m
 
 
