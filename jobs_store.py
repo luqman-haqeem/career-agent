@@ -16,7 +16,7 @@ def _path():
 
 
 def _now_iso() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="microseconds")
 
 
 def _load() -> dict:
@@ -67,6 +67,8 @@ def record(job: dict, state: str) -> str:
         "location": job.get("location", ""),
         "url": job.get("url", ""),
         "fit_score": job.get("fit_score"),
+        "skip_reasons": [str(s).strip() for s in (job.get("skip_reasons") or [])
+                         if str(s).strip()],
     })
     entry.setdefault("first_seen", _now_iso())
     entry.setdefault("state", state)
@@ -75,11 +77,54 @@ def record(job: dict, state: str) -> str:
     return jid
 
 
-def set_state(jid: str, state: str) -> None:
+def set_decision(jid: str, state: str, reason: str = None) -> None:
+    """Record a user decision: state (+ optional skip reason) and a timestamp."""
     data = _load()
-    if jid in data["jobs"]:
-        data["jobs"][jid]["state"] = state
-        _save(data)
+    entry = data["jobs"].get(jid)
+    if not entry:
+        return
+    entry["state"] = state
+    if reason:
+        entry["reason"] = reason
+    entry["decided_at"] = _now_iso()
+    _save(data)
+
+
+def set_state(jid: str, state: str) -> None:
+    """Back-compat shim: set state with no reason."""
+    set_decision(jid, state)
+
+
+def decisions(limit: int = 40) -> list:
+    """Recently DECIDED jobs (applied/skipped), newest first — synthesis input."""
+    jobs = [j for j in _load()["jobs"].values()
+            if j.get("state") in ("applied", "skipped")]
+    jobs.sort(key=lambda j: j.get("decided_at") or j.get("first_seen") or "",
+              reverse=True)
+    out = []
+    for j in jobs[:limit]:
+        out.append({
+            "id": j.get("id", ""),
+            "title": j.get("title", ""),
+            "company": j.get("company", ""),
+            "location": j.get("location", ""),
+            "fit_score": j.get("fit_score"),
+            "state": j.get("state", ""),
+            "reason": j.get("reason", ""),
+            "decided_at": j.get("decided_at", ""),
+        })
+    return out
+
+
+def last_synthesis_at():
+    """ISO timestamp of the last preference synthesis, or None."""
+    return _load().get("last_synthesis_at")
+
+
+def mark_synthesis() -> None:
+    data = _load()
+    data["last_synthesis_at"] = _now_iso()
+    _save(data)
 
 
 def recent_labels(limit: int = 40) -> list:
