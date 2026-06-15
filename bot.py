@@ -425,6 +425,7 @@ async def _on_job_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: s
         return
     action, jid = parts[1], parts[2]
     extra = parts[3] if len(parts) > 3 else None
+    _pending_skip_reason.pop(update.effective_chat.id, None)  # user re-engaged a card; drop any half-finished free-text reason
     job = jobs_store.get(jid)
     if not job:
         await query.answer("That job is no longer available.", show_alert=True)
@@ -452,7 +453,7 @@ async def _on_job_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: s
             return
         reason = None
         if extra is not None and extra.isdigit():
-            reasons = job.get("skip_reasons") or []
+            reasons = job.get("skip_reasons") or _FALLBACK_SKIP_REASONS
             i = int(extra)
             if 0 <= i < len(reasons):
                 reason = reasons[i]
