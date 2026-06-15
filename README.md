@@ -26,6 +26,10 @@ Anthropic API key and no per-token bill.** Usage counts against your subscriptio
 - **Stays honest over time** — a corrections log remembers any fact you've fixed,
   and metrics carry provenance (verified / self-reported / estimate) so nothing
   gets inflated.
+- **Learns your taste** — every job card's Apply / Skip (with a quick, job-specific
+  reason or your own note) teaches it; it keeps an inferred-preferences file and uses
+  it to rank future matches and sharpen fit advice. It's preferences, never invented
+  experience.
 - **No fabrication** — a hard rule in `CLAUDE.md`; gaps are flagged, not faked.
 - Auto-apply is intentionally **not** included.
 
@@ -129,6 +133,7 @@ Notes:
 | `memory/experiences/` | one structured CV point per file |
 | `memory/projects/` | personal projects |
 | `memory/corrections.md` | facts you've corrected — never repeated |
+| `memory/preferences.md` | inferred Apply/Skip preferences — ranking signal, not facts |
 | `resumes/` | generated, tailored resumes |
 | `data/sessions/` | per-chat Claude session id |
 
