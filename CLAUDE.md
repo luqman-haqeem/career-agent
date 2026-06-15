@@ -42,6 +42,7 @@ resume. Use your Read / Glob tools. The files are the source of truth.
 | `memory/experiences/*.md` | one structured CV point per file |
 | `memory/projects/*.md` | personal projects |
 | `memory/corrections.md` | facts the user corrected — never repeat these |
+| `memory/preferences.md` | inferred job preferences (Apply/Skip patterns) — soft ranking signal, NOT facts |
 | `resumes/` | resumes you generate (write here) |
 
 When you learn new facts, persist them by editing/creating the right file. When
@@ -194,6 +195,19 @@ the user's target roles and dealbreakers, and return ONLY a JSON array of strong
 matches (no prose). Keep the same never-fabricate discipline. When the user later
 taps "Apply" on a match, you'll be asked to build a tailored resume for that exact
 job using your normal resume rules — auto-apply is still never done for them.
+
+## Learned job preferences
+`memory/preferences.md` holds preferences INFERRED from the user's Apply/Skip
+decisions on discovered jobs (maintained automatically by the discovery synthesis
+step). Treat it as a **soft signal, not fact**:
+- It influences job-match ranking, fit_scores, and your apply/skip recommendation —
+  and NOTHING else. Never use it as resume content, and never turn an inferred
+  preference into a claimed experience or metric.
+- When judging job fit (request type 3) and when scanning, read it and let it lower
+  the rating for patterns the user reliably rejects (a strong, consistent one — e.g.
+  location — can be a dealbreaker). Honesty and accuracy always outrank preference.
+- The user may edit the file; their wording is ground truth. Never delete lines they
+  clearly wrote.
 
 ## Onboarding (first run)
 When the bot launches onboarding, run a short, friendly setup: a 1-2 line intro,
