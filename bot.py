@@ -17,6 +17,7 @@ import config
 import jobs_store
 import onboarding
 import render
+import preferences
 import scan
 import telegram_format
 from agent import run_turn
@@ -522,6 +523,13 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
 
 
 async def _do_scan(bot, chat_id: int, manual: bool) -> None:
+    try:
+        note = await preferences.run_synthesis()
+        if note:
+            await bot.send_message(chat_id, f"🧠 {note}")
+    except Exception:  # noqa: BLE001 - learning must never block a scan
+        log.warning("preference synthesis failed", exc_info=True)
+
     try:
         matches = await scan.run_scan()
     except scan.ScanError as e:
