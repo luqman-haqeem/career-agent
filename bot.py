@@ -65,42 +65,13 @@ def save_session_id(chat_id: int, session_id) -> None:
             json.dumps({"session_id": session_id}), encoding="utf-8")
 
 
-def _transcript_path(session_id: str):
-    """Locate Claude Code's JSONL transcript for a session, if it exists.
-
-    The CLI stores it under ~/.claude/projects/<escaped-cwd>/<session_id>.jsonl;
-    we just search by name so we don't depend on the exact folder encoding.
-    """
-    if not session_id:
-        return None
-    root = Path.home() / ".claude" / "projects"
-    if not root.exists():
-        return None
-    for p in root.rglob(f"{session_id}.jsonl"):
-        return p
-    return None
-
-
 def _context_stats(chat_id: int) -> dict:
-    """Return how big the current conversation is (entries + size).
+    """Return whether a conversation is currently active.
 
-    Sizing relies on the Claude CLI transcript file. The OpenCode backend stores
-    sessions in its own location, so there we only report whether a session is
-    active (sized=False) rather than guessing a byte count.
+    OpenCode stores session state in its own location, so we report only
+    whether a session is active rather than guessing a byte count.
     """
-    session_id = load_session_id(chat_id)
-    if config.AI_BACKEND == "opencode":
-        return {"active": bool(session_id), "sized": False}
-    path = _transcript_path(session_id) if session_id else None
-    if not path:
-        return {"active": False, "sized": True, "entries": 0, "kb": 0}
-    try:
-        kb = round(path.stat().st_size / 1024)
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            entries = sum(1 for _ in fh)
-    except OSError:
-        return {"active": bool(session_id), "sized": True, "entries": 0, "kb": 0}
-    return {"active": True, "sized": True, "entries": entries, "kb": kb}
+    return {"active": bool(load_session_id(chat_id)), "sized": False}
 
 
 def _status_text(chat_id: int) -> str:
@@ -110,26 +81,9 @@ def _status_text(chat_id: int) -> str:
                 "🟢 Fresh — no active conversation yet. The next message starts one.\n\n"
                 "Your long-term memory (profile, goals, experiences) is separate and "
                 "always kept.")
-    if not s.get("sized", True):
-        return ("📊 <b>Conversation status</b>\n\n"
-                f"🟢 Active conversation (backend: <b>{config.AI_BACKEND}</b>).\n"
-                "Size isn't tracked on this backend, but a long chat can still slow "
-                "replies — reset anytime to start fresh.\n\n"
-                "Your long-term memory (profile, goals, experiences) is <b>separate</b> "
-                "and untouched by a reset.\n\n"
-                "Tap below to clear the conversation and start fresh.")
-    entries, kb = s["entries"], s["kb"]
-    if entries < 40:
-        state = "🟢 Fresh — fast replies."
-    elif entries < 100:
-        state = "🟡 Getting long — replies may start to slow down."
-    else:
-        state = "🔴 Large — consider resetting to speed things up."
     return ("📊 <b>Conversation status</b>\n\n"
-            "This is the chat history that reloads <i>every</i> time you message me.\n"
-            f"• Entries: <b>{entries}</b>\n"
-            f"• Size: <b>~{kb} KB</b>\n"
-            f"• State: {state}\n\n"
+            "🟢 Active conversation.\n"
+            "A long chat can still slow replies — reset anytime to start fresh.\n\n"
             "Your long-term memory (profile, goals, experiences) is <b>separate</b> "
             "and untouched by a reset.\n\n"
             "Tap below to clear the conversation and start fresh.")
@@ -693,11 +647,10 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 def main() -> None:
     if not config.TELEGRAM_BOT_TOKEN:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env (get it from @BotFather).")
-    if config.AI_BACKEND == "opencode" and not (
-            shutil.which(config.OPENCODE_BIN) or Path(config.OPENCODE_BIN).exists()):
+    if not (shutil.which(config.OPENCODE_BIN) or Path(config.OPENCODE_BIN).exists()):
         raise SystemExit(
-            f"AI_BACKEND=opencode but the OpenCode CLI ('{config.OPENCODE_BIN}') was "
-            "not found. Install it and/or set OPENCODE_BIN. See docs/opencode-setup.md.")
+            f"The OpenCode CLI ('{config.OPENCODE_BIN}') was not found. "
+            "Install it and/or set OPENCODE_BIN. See docs/opencode-setup.md.")
     if not config.ALLOWED_USER_IDS:
         log.warning("ALLOWED_USER_IDS is empty — the bot is open to anyone who "
                     "finds it. Send /start to learn your ID, then lock it down.")
@@ -740,8 +693,7 @@ def main() -> None:
             log.info("Job discovery scheduled daily at %02d:00 %s on weekdays %s.",
                      config.SCAN_HOUR, config.SCAN_TZ, sorted(config.SCAN_WEEKDAYS))
 
-    backend_desc = ("Claude subscription (claude_cli)" if config.AI_BACKEND != "opencode"
-                    else f"OpenCode (model: {config.OPENCODE_MODEL or 'default'})")
+    backend_desc = f"OpenCode (model: {config.OPENCODE_MODEL or 'default'})"
     log.info("Career Agent is running — backend: %s. Ctrl+C to stop.", backend_desc)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
