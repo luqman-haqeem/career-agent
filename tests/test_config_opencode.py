@@ -8,7 +8,7 @@ def test_opencode_model_has_openrouter_default(monkeypatch):
     monkeypatch.delenv("OPENCODE_MODEL", raising=False)
     import importlib
     importlib.reload(config)
-    assert config.OPENCODE_MODEL == "openrouter/anthropic/claude-sonnet-4.5"
+    assert config.OPENCODE_MODEL == "openrouter/google/gemini-2.5-flash-lite"
 
 
 def test_opencode_json_denies_bash():
