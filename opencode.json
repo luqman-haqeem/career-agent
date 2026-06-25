@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "openrouter/anthropic/claude-sonnet-4.5",
+  "permission": {
+    "bash": "deny",
+    "edit": "allow",
+    "webfetch": "allow"
+  },
+  "tools": {
+    "bash": false,
+    "read": true,
+    "edit": true,
+    "write": true,
+    "webfetch": true,
+    "websearch": true
+  }
+}

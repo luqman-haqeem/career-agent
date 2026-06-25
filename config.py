@@ -48,10 +48,10 @@ MODEL = os.getenv("CAREER_AGENT_MODEL", "claude-opus-4-8")
 # Path to the OpenCode CLI. Auto-detected if on PATH.
 OPENCODE_BIN = os.getenv("OPENCODE_BIN") or shutil.which("opencode") or "opencode"
 
-# Model string in OpenCode's "provider/model" form, e.g.
-# "anthropic/claude-sonnet-4.5" or "openrouter/anthropic/claude-sonnet-4.5".
-# If blank, OpenCode uses whatever model it's configured to default to.
-OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", "").strip()
+# Model string in OpenCode's "provider/model" form. Defaults to Claude Sonnet
+# on OpenRouter — the closest behavioral match to the old Claude path. Swap to a
+# cheaper model here. Exact slug confirmed against `opencode` / models.dev.
+OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", "openrouter/anthropic/claude-sonnet-4.5").strip()
 
 # Comma-separated Telegram user IDs allowed to use the bot. Empty = allow all
 # (you'll be warned). Send /start to learn your ID, then lock it down here.
