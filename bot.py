@@ -1,4 +1,4 @@
-"""Telegram front-end for the Career Agent (runs on your Claude subscription)."""
+"""Telegram front-end for the Career Agent (runs on OpenCode + OpenRouter)."""
 import asyncio
 import datetime as dt
 import html
@@ -22,7 +22,7 @@ import scan
 import telegram_format
 from agent import run_turn
 
-# Files Claude Code's Read tool handles natively (no pre-extraction needed).
+# Files OpenCode's read tool handles natively (no pre-extraction needed).
 NATIVE_READ_EXT = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
                    ".txt", ".md", ".markdown", ".csv"}
 
@@ -44,7 +44,7 @@ _STATIC_INTRO = (
     "Commands: /help  /reset  /onboard")
 
 
-# --- Per-chat session id (Claude conversation continuity) ------------------
+# --- Per-chat session id (OpenCode conversation continuity) ----------------
 def _session_path(chat_id: int) -> Path:
     return config.SESSIONS_DIR / f"{chat_id}.json"
 
@@ -244,8 +244,7 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
                          prompt: str, files=None) -> None:
     """Run one agent turn for this chat and send back text + any new resume.
 
-    `files` are upload paths attached for backends that need them (OpenCode uses
-    --file; the Claude path reads via the path in the prompt and ignores them).
+    `files` are upload paths passed to OpenCode via --file.
     """
     chat_id = update.effective_chat.id
     session_id = load_session_id(chat_id)

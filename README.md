@@ -46,10 +46,13 @@ edit, write, webfetch, websearch allowed).
 
 2. **Get an OpenRouter API key** at <https://openrouter.ai/settings/keys>.
 
-3. **Smoke-test** (confirms auth + model before starting the bot):
+3. **Smoke-test** (confirms auth + model before starting the bot). The `opencode`
+   CLI doesn't read `.env`, so pass the key in the shell for this check:
    ```bash
-   opencode run "say hello" --model openrouter/google/gemini-2.5-flash-lite
+   OPENROUTER_API_KEY=sk-or-... opencode run "say hello" --model openrouter/google/gemini-2.5-flash-lite
    ```
+   (The bot itself loads `OPENROUTER_API_KEY` from `.env` automatically — this
+   manual export is only for the one-off smoke test.)
 
 4. **Install the bot's dependencies**
    ```bash
