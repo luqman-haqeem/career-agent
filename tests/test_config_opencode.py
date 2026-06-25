@@ -1,0 +1,23 @@
+import json
+from pathlib import Path
+
+import config
+
+
+def test_opencode_model_has_openrouter_default(monkeypatch):
+    monkeypatch.delenv("OPENCODE_MODEL", raising=False)
+    import importlib
+    importlib.reload(config)
+    assert config.OPENCODE_MODEL == "openrouter/anthropic/claude-sonnet-4.5"
+
+
+def test_opencode_json_denies_bash():
+    data = json.loads(Path("opencode.json").read_text())
+    # bash must be denied; file tools + web allowed.
+    perms = data.get("permission", {})
+    assert perms.get("bash") == "deny"
+
+
+def test_opencode_json_is_valid_schema_doc():
+    data = json.loads(Path("opencode.json").read_text())
+    assert "$schema" in data
