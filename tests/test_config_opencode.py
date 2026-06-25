@@ -21,3 +21,11 @@ def test_opencode_json_denies_bash():
 def test_opencode_json_is_valid_schema_doc():
     data = json.loads(Path("opencode.json").read_text())
     assert "$schema" in data
+
+
+def test_claude_config_removed():
+    import importlib
+    importlib.reload(config)
+    assert not hasattr(config, "AI_BACKEND")
+    assert not hasattr(config, "CLAUDE_BIN")
+    assert not hasattr(config, "MODEL")
