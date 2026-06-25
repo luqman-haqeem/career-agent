@@ -50,3 +50,24 @@ def test_parse_skips_non_text_parts():
     ])
     reply, _ = agent._opencode_parse(out, None)
     assert reply == "kept"
+
+
+def test_run_turn_uses_opencode_path(monkeypatch):
+    calls = {}
+
+    async def fake_opencode(user_message, session_id=None, files=None):
+        calls["msg"] = user_message
+        return "reply-text", "ses_new"
+
+    monkeypatch.setattr(agent, "_opencode_run_turn", fake_opencode)
+    import asyncio
+    reply, sid = asyncio.run(agent.run_turn("hi", session_id="ses_old"))
+    assert reply == "reply-text"
+    assert sid == "ses_new"
+    assert calls["msg"] == "hi"
+
+
+def test_no_claude_backend_symbols():
+    # The Claude path must be fully removed.
+    assert not hasattr(agent, "_claude_cli_run_turn")
+    assert not hasattr(agent, "ALLOWED_TOOLS")
