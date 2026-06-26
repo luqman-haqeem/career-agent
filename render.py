@@ -64,12 +64,26 @@ def _normalize(data: dict) -> dict:
     where = ", ".join(x for x in (loc.get("city"), loc.get("region")) if x)
     if where:
         contact.append(where)
-    if b.get("url"):
+    # Collect URLs without repeating the same link. basics.url is meant for a
+    # personal site; if it just duplicates a profile (e.g. GitHub in both), drop
+    # it so the contact line doesn't show the same link twice.
+    def _url_key(u):
+        return (u or "").rstrip("/").lower()
+
+    profile_keys = {_url_key(p.get("url")) for p in (b.get("profiles") or []) if p.get("url")}
+    if b.get("url") and _url_key(b["url"]) not in profile_keys:
         contact.append(b["url"])
+    seen_urls = set()
     for p in b.get("profiles") or []:
-        if p.get("url"):
-            net = p.get("network", "")
-            contact.append(f"{net}: {p['url']}" if net else p["url"])
+        u = p.get("url")
+        if not u:
+            continue
+        key = _url_key(u)
+        if key in seen_urls:
+            continue
+        seen_urls.add(key)
+        net = p.get("network", "")
+        contact.append(f"{net}: {u}" if net else u)
 
     work = [{
         "name": w.get("name") or w.get("company") or "",

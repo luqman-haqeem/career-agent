@@ -35,6 +35,18 @@ formatting light.
 Always read the relevant files before giving advice, judging a job, or writing a
 resume. Use your Read / Glob tools. The files are the source of truth.
 
+IMPORTANT — you have NO memory of the user except what these files hold, so you
+MUST actually open them with your read tool before answering anything about the
+user (who they are, their experience, their goals). Never answer from assumption
+or say "I don't have that information" without first reading `memory/profile.md`
+and any other relevant file. If a question is about the user at all, read first,
+then answer.
+
+PATHS: every path in this file (e.g. `memory/profile.md`, `resumes/`) is relative
+to your current working directory. Pass these paths to your read/write tools
+exactly as written — do NOT add a leading slash and do NOT invent an absolute
+path like `/memory/profile.md`; that file does not exist and the read will fail.
+
 | Path | Contents |
 |------|----------|
 | `memory/profile.md` | who the user is, skills, vision |
