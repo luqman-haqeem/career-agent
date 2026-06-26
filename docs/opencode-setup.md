@@ -47,6 +47,26 @@ OPENCODE_MODEL=openrouter/meta-llama/llama-3.3-70b-instruct
 
 Browse available model slugs at <https://openrouter.ai/models>.
 
+## 3b. Different models per task (optional)
+
+By default every task uses `OPENCODE_MODEL`. You can override per task — each
+falls back to `OPENCODE_MODEL` when unset:
+
+```ini
+SCAN_MODEL=openrouter/...        # job-discovery scans
+RESUME_MODEL=openrouter/...      # resume generation
+CRITIQUE_MODEL=openrouter/...    # resume critique / scoring
+CLASSIFIER_MODEL=openrouter/...  # the per-message classifier (defaults to OPENCODE_MODEL)
+```
+
+Scans and the **Apply**-button resume have their own code paths, so they use
+`SCAN_MODEL` / `RESUME_MODEL` directly. But a message you **type** (e.g. "critique
+it" or "write me a resume") all comes through one path — the bot can't tell what
+it is by code. So when you set a distinct `CRITIQUE_MODEL` or `RESUME_MODEL`, the
+bot makes one cheap OpenRouter call per typed message to classify it
+(critique / resume / default) and pick the model. If you set neither, that
+classifier never runs and there's no extra cost.
+
 ## 4. Smoke-test before running the bot
 
 ```bash
