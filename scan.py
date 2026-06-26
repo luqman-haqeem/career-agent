@@ -147,7 +147,7 @@ class ScanError(RuntimeError):
 async def _ask_agent() -> str:
     seen_labels = jobs_store.recent_labels()
     prompt = build_prompt(seen_labels)
-    reply, _ = await agent.run_turn(prompt, session_id=None)
+    reply, _ = await agent.run_turn(prompt, session_id=None, model=config.model_for("scan"))
     return reply
 
 

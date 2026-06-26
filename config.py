@@ -1,7 +1,7 @@
 """Central configuration and paths for the Career Agent.
 
-This build runs on your local Claude Code subscription (the `claude` CLI),
-so there is NO Anthropic API key. Usage counts against your subscription.
+The agent runs on the OpenCode CLI pointed at OpenRouter (per-token). Set
+OPENROUTER_API_KEY and OPENCODE_MODEL in .env. See docs/opencode-setup.md.
 """
 import os
 import shutil
@@ -26,32 +26,50 @@ for _d in (MEMORY_DIR, EXPERIENCES_DIR, PROJECTS_DIR, RESUMES_DIR, UPLOADS_DIR, 
 # --- Settings --------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
-# --- AI backend (which "brain" answers) ------------------------------------
-# "claude_cli" (DEFAULT): runs on your Claude Code subscription via the local
-#   `claude` CLI — no API key, no per-token cost, and full native tools
-#   (file read/write, PDF/image reading, web fetch, session resume) for free.
-# "opencode": runs the open-source OpenCode CLI agent (https://opencode.ai),
-#   pointed at any model/provider you've configured (OpenRouter, Anthropic API,
-#   a local model, or your subscription via a community plugin). Provided as an
-#   OPTION; switch by setting AI_BACKEND=opencode in .env. See docs/opencode-setup.md.
-AI_BACKEND = os.getenv("AI_BACKEND", "claude_cli").strip().lower()
-
-# --- claude_cli backend ----------------------------------------------------
-# Path to the Claude Code CLI. Auto-detected if on PATH.
-CLAUDE_BIN = os.getenv("CLAUDE_BIN") or shutil.which("claude") or "claude"
-
-# Model the agent uses. Opus is highest quality; switch to a Sonnet id to use
-# fewer subscription credits, e.g. CAREER_AGENT_MODEL=claude-sonnet-4-5
-MODEL = os.getenv("CAREER_AGENT_MODEL", "claude-opus-4-8")
-
-# --- opencode backend (only used when AI_BACKEND=opencode) -----------------
+# --- opencode backend ------------------------------------------------------
 # Path to the OpenCode CLI. Auto-detected if on PATH.
 OPENCODE_BIN = os.getenv("OPENCODE_BIN") or shutil.which("opencode") or "opencode"
 
-# Model string in OpenCode's "provider/model" form, e.g.
-# "anthropic/claude-sonnet-4.5" or "openrouter/anthropic/claude-sonnet-4.5".
-# If blank, OpenCode uses whatever model it's configured to default to.
-OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", "").strip()
+# Model string in OpenCode's "provider/model" form. Defaults to Gemini 2.5
+# Flash-Lite on OpenRouter — cheap, clean output, reliable tool-use and honesty
+# (validated live). Swap to another model here. Avoid "thinking" variants, which
+# leak chain-of-thought into replies.
+OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", "openrouter/google/gemini-2.5-flash-lite").strip()
+
+# --- Per-task model overrides ----------------------------------------------
+# Each falls back to OPENCODE_MODEL when unset (so leaving them blank keeps
+# today's single-model behavior). SCAN_MODEL / RESUME_MODEL drive the dedicated
+# scan + Apply-button paths. Setting a distinct CRITIQUE_MODEL or RESUME_MODEL
+# switches on the per-message classifier (see classify.py) for TYPED messages.
+SCAN_MODEL = os.getenv("SCAN_MODEL", "").strip()
+RESUME_MODEL = os.getenv("RESUME_MODEL", "").strip()
+CRITIQUE_MODEL = os.getenv("CRITIQUE_MODEL", "").strip()
+CLASSIFIER_MODEL = os.getenv("CLASSIFIER_MODEL", "").strip()
+
+_TASK_MODELS = {
+    "scan": SCAN_MODEL,
+    "resume": RESUME_MODEL,
+    "critique": CRITIQUE_MODEL,
+    "classifier": CLASSIFIER_MODEL,
+}
+
+
+def model_for(task: str) -> str:
+    """Resolve the model slug for a task, falling back to OPENCODE_MODEL.
+
+    task is one of "scan", "resume", "critique", "classifier", or "default".
+    """
+    return _TASK_MODELS.get(task) or OPENCODE_MODEL
+
+
+def routing_active() -> bool:
+    """True when a distinct critique/resume model is configured.
+
+    Gates the per-message classifier: if the user hasn't set a per-task model
+    that differs from the default, the classifier never runs (no added cost).
+    """
+    return model_for("critique") != OPENCODE_MODEL or model_for("resume") != OPENCODE_MODEL
+
 
 # Comma-separated Telegram user IDs allowed to use the bot. Empty = allow all
 # (you'll be warned). Send /start to learn your ID, then lock it down here.

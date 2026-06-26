@@ -4,12 +4,7 @@ A private Telegram bot that remembers your career, turns your real experiences
 into structured CV points, judges how well jobs fit you, and writes tailored
 resumes — **never inventing experience you don't have.**
 
-It runs on your **Claude Code subscription** (the local `claude` CLI) — **no
-Anthropic API key and no per-token bill.** Usage counts against your subscription.
-
-> Single-user by design. Anthropic's terms don't allow offering a
-> subscription-backed product to others, so keep it locked to your own Telegram
-> ID and don't redistribute it as a service.
+It runs on the **[OpenCode](https://opencode.ai) CLI** pointed at **[OpenRouter](https://openrouter.ai)** — per-token billing, no subscription required. You bring your own `OPENROUTER_API_KEY`.
 
 ## What it does
 - **Remembers you** — profile, skills, goals, vision, and projects, stored as
@@ -34,34 +29,46 @@ Anthropic API key and no per-token bill.** Usage counts against your subscriptio
 - Auto-apply is intentionally **not** included.
 
 ## How it works
-The bot is a thin bridge: each Telegram message is handed to the `claude` CLI in
-headless mode (`agent.py`). Claude uses its own Read/Write/Edit and WebFetch tools
-to manage the markdown memory in this folder, following the rules in `CLAUDE.md`.
-Conversation continuity is kept per chat via Claude's `--resume` session id.
+The bot is a thin bridge: each Telegram message is handed to the OpenCode CLI in
+headless mode (`agent.py`). OpenCode uses Read/Write/Edit and WebFetch tools to
+manage the markdown memory in this folder, following the rules in `CLAUDE.md`
+(auto-loaded by OpenCode). Conversation continuity is kept per chat via OpenCode's
+session id. Tool access is locked down by `opencode.json` (bash denied; read,
+edit, write, webfetch, websearch allowed).
 
 ## Setup (one time)
 
-1. **Make sure Claude Code is installed and logged in** (you already use it):
+1. **Install OpenCode** and verify it runs:
    ```bash
-   claude --version        # should print a version
-   claude -p "hi"          # should reply without asking for an API key
+   npm install -g opencode-ai   # or: curl -fsSL https://opencode.ai/install | bash
+   opencode --version
    ```
 
-2. **Install the bot's two dependencies**
+2. **Get an OpenRouter API key** at <https://openrouter.ai/settings/keys>.
+
+3. **Smoke-test** (confirms auth + model before starting the bot). The `opencode`
+   CLI doesn't read `.env`, so pass the key in the shell for this check:
+   ```bash
+   OPENROUTER_API_KEY=sk-or-... opencode run "say hello" --model openrouter/google/gemini-2.5-flash-lite
+   ```
+   (The bot itself loads `OPENROUTER_API_KEY` from `.env` automatically — this
+   manual export is only for the one-off smoke test.)
+
+4. **Install the bot's dependencies**
    ```bash
    cd ~/career-agent
    python3 -m pip install -r requirements.txt
    ```
 
-3. **Create a Telegram bot**: message **@BotFather**, send `/newbot`, copy the token.
+5. **Create a Telegram bot**: message **@BotFather**, send `/newbot`, copy the token.
 
-4. **Configure**
+6. **Configure**
    ```bash
    cp .env.example .env
    ```
-   Put your `TELEGRAM_BOT_TOKEN` in `.env`.
+   Put your `TELEGRAM_BOT_TOKEN` and `OPENROUTER_API_KEY` in `.env`.
 
-5. **Run it**
+7. **Run it**
    ```bash
    python3 bot.py
    ```
@@ -78,26 +85,19 @@ Just chat naturally:
 Resumes come back as a polished **PDF** (rendered locally from a JSON Resume file
 via `render.py` + Tectonic) — the bot sends you both the PDF and the `.json`.
 
-Handy commands: `/status` shows your current conversation context size with a
-one-tap **Reset context** button; `/reset` clears it; `/help` lists everything.
-
-## Optional: run on OpenCode instead of the subscription
-By default the bot runs on your Claude Code subscription. You can instead point it
-at [OpenCode](https://opencode.ai) to use any model/provider you configure
-(OpenRouter, Anthropic API, a local model, etc.) by setting `AI_BACKEND=opencode`
-in `.env`. The default is unchanged. Full guide: [`docs/opencode-setup.md`](docs/opencode-setup.md).
+Handy commands: `/status` shows whether a conversation is active with a one-tap
+**Reset context** button; `/reset` clears it; `/help` lists everything.
 
 ## Run in Docker (isolated)
-Runs the bot in a container with its own `claude` CLI. Your subscription login is
-mounted **read-only** (never baked into the image), and your career data stays on
-the host via bind mounts.
 
-Requirements: Docker + Compose, and a working `claude` login on the host
-(`~/.claude/.credentials.json` must exist).
+Runs the bot in a container with OpenCode installed. Your `OPENROUTER_API_KEY`
+flows in via `.env` — no credential files to mount.
+
+Requirements: Docker + Compose.
 
 ```bash
 cd ~/career-agent
-cp .env.example .env          # then put your TELEGRAM_BOT_TOKEN in .env
+cp .env.example .env          # put your TELEGRAM_BOT_TOKEN + OPENROUTER_API_KEY in .env
 docker compose up -d --build  # build + run in the background
 docker compose logs -f        # watch logs (send /start in Telegram)
 ```
@@ -113,16 +113,12 @@ docker compose up -d --build  # rebuild after changing code (memory/CLAUDE.md
 What's mounted (see `docker-compose.yml`):
 - `./memory`, `./resumes`, `./data` → your data, editable on the host.
 - `./CLAUDE.md` (read-only) → tune behavior without rebuilding.
-- `~/.claude/.credentials.json` (read-only) → your subscription auth.
-- a named volume `claude_state` → the container's own Claude session state.
+- `./opencode.json` (read-only) → tool-lockdown policy (bash denied).
+- a named volume `opencode_state` → the container's own OpenCode session state.
 
 Notes:
-- **Auto-reseed:** the container mirrors your host Claude login (`~/.claude` is
-  mounted read-only) every few minutes, so its token never goes stale — no manual
-  re-seeding after you log in or use `claude` on the host. It still self-refreshes
-  on its own when the host is idle/off. Tune the interval with `RESEED_INTERVAL`
-  (seconds, default 300) in `.env`.
-- It's still single-user — keep `ALLOWED_USER_IDS` set in `.env`.
+- It's single-user — keep `ALLOWED_USER_IDS` set in `.env`.
+- Full OpenCode setup details: [`docs/opencode-setup.md`](docs/opencode-setup.md).
 
 ## Where things live
 | Path | What |
@@ -135,12 +131,18 @@ Notes:
 | `memory/corrections.md` | facts you've corrected — never repeated |
 | `memory/preferences.md` | inferred Apply/Skip preferences — ranking signal, not facts |
 | `resumes/` | generated, tailored resumes |
-| `data/sessions/` | per-chat Claude session id |
+| `data/sessions/` | per-chat OpenCode session id |
 
 ## Tuning
 - Edit `CLAUDE.md` to change tone or rules (re-read on every message).
-- `CAREER_AGENT_MODEL` in `.env` picks the model (Opus for quality, a Sonnet id
-  to use fewer credits).
+- `OPENCODE_MODEL` in `.env` picks the model (any `openrouter/<provider>/<model>`
+  slug from <https://openrouter.ai/models>). Avoid "thinking"-variant models —
+  they leak chain-of-thought into replies.
+- Per-task models (optional): `SCAN_MODEL`, `RESUME_MODEL`, `CRITIQUE_MODEL`
+  let scans, resume generation, and critique each use a different model (each
+  falls back to `OPENCODE_MODEL`). Setting a distinct `CRITIQUE_MODEL`/`RESUME_MODEL`
+  turns on a cheap per-message classifier for typed requests; leaving them unset
+  keeps single-model behavior at no extra cost.
 
 ## Notes & limits
 - Some job sites (e.g. LinkedIn) block bots, so link fetching may fail — just
