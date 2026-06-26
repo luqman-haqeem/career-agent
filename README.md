@@ -138,6 +138,11 @@ Notes:
 - `OPENCODE_MODEL` in `.env` picks the model (any `openrouter/<provider>/<model>`
   slug from <https://openrouter.ai/models>). Avoid "thinking"-variant models —
   they leak chain-of-thought into replies.
+- Per-task models (optional): `SCAN_MODEL`, `RESUME_MODEL`, `CRITIQUE_MODEL`
+  let scans, resume generation, and critique each use a different model (each
+  falls back to `OPENCODE_MODEL`). Setting a distinct `CRITIQUE_MODEL`/`RESUME_MODEL`
+  turns on a cheap per-message classifier for typed requests; leaving them unset
+  keeps single-model behavior at no extra cost.
 
 ## Notes & limits
 - Some job sites (e.g. LinkedIn) block bots, so link fetching may fail — just
