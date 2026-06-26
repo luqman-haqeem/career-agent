@@ -36,6 +36,40 @@ OPENCODE_BIN = os.getenv("OPENCODE_BIN") or shutil.which("opencode") or "opencod
 # leak chain-of-thought into replies.
 OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", "openrouter/google/gemini-2.5-flash-lite").strip()
 
+# --- Per-task model overrides ----------------------------------------------
+# Each falls back to OPENCODE_MODEL when unset (so leaving them blank keeps
+# today's single-model behavior). SCAN_MODEL / RESUME_MODEL drive the dedicated
+# scan + Apply-button paths. Setting a distinct CRITIQUE_MODEL or RESUME_MODEL
+# switches on the per-message classifier (see classify.py) for TYPED messages.
+SCAN_MODEL = os.getenv("SCAN_MODEL", "").strip()
+RESUME_MODEL = os.getenv("RESUME_MODEL", "").strip()
+CRITIQUE_MODEL = os.getenv("CRITIQUE_MODEL", "").strip()
+CLASSIFIER_MODEL = os.getenv("CLASSIFIER_MODEL", "").strip()
+
+_TASK_MODELS = {
+    "scan": SCAN_MODEL,
+    "resume": RESUME_MODEL,
+    "critique": CRITIQUE_MODEL,
+    "classifier": CLASSIFIER_MODEL,
+}
+
+
+def model_for(task: str) -> str:
+    """Resolve the model slug for a task, falling back to OPENCODE_MODEL.
+
+    task is one of "scan", "resume", "critique", "classifier", or "default".
+    """
+    return _TASK_MODELS.get(task) or OPENCODE_MODEL
+
+
+def routing_active() -> bool:
+    """True when a distinct critique/resume model is configured.
+
+    Gates the per-message classifier: if the user hasn't set a per-task model
+    that differs from the default, the classifier never runs (no added cost).
+    """
+    return model_for("critique") != OPENCODE_MODEL or model_for("resume") != OPENCODE_MODEL
+
 # Comma-separated Telegram user IDs allowed to use the bot. Empty = allow all
 # (you'll be warned). Send /start to learn your ID, then lock it down here.
 _allowed = os.getenv("ALLOWED_USER_IDS", "").strip()
