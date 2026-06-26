@@ -96,3 +96,22 @@ def test_no_claude_backend_symbols():
     # The Claude path must be fully removed.
     assert not hasattr(agent, "_claude_cli_run_turn")
     assert not hasattr(agent, "ALLOWED_TOOLS")
+
+
+def test_run_turn_threads_model_through_retry(monkeypatch):
+    seen = []
+
+    async def fake_invoke(user_message, session_id, files, model=None):
+        seen.append((session_id, model))
+        if len(seen) == 1:
+            return 1, "", "stale session"   # first call fails -> triggers retry
+        return 0, json.dumps({"part": {"type": "text", "id": "p1", "text": "ok"}}), ""
+
+    monkeypatch.setattr(agent, "_opencode_invoke", fake_invoke)
+    import asyncio
+    reply, _ = asyncio.run(agent._opencode_run_turn("hi", session_id="ses_old", model="openrouter/x/y"))
+    assert reply == "ok"
+    assert len(seen) == 2
+    assert seen[0][1] == "openrouter/x/y"   # model on first invoke
+    assert seen[1][1] == "openrouter/x/y"   # model survived the retry
+    assert seen[1][0] is None               # retry uses a fresh (None) session

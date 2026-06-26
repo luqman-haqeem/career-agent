@@ -241,13 +241,16 @@ async def _launch_onboarding(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     await _send(update, text)
 
 
-async def _model_for_message(text: str):
+async def _model_for_message(text: str) -> str | None:
     """Pick the model for a TYPED message. None = default model.
 
     Only classifies when routing is active (a distinct critique/resume model is
     configured), so there's no classifier cost unless the user opted in.
     """
     if not config.routing_active():
+        return None
+    # Onboarding turns run on the default model (spec: onboarding stays on default).
+    if onboarding.status() == "in_progress":
         return None
     return config.model_for(await classify.classify_task(text))
 
