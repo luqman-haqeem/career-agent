@@ -67,7 +67,7 @@ def store_in_tmp(tmp_path, monkeypatch):
 
 
 def _fake_reply(jobs_json):
-    async def _run(prompt, session_id=None, files=None):
+    async def _run(prompt, session_id=None, files=None, **kwargs):
         return jobs_json, "sess-1"
     return _run
 
@@ -106,7 +106,7 @@ async def test_run_scan_caps_to_max(store_in_tmp, monkeypatch):
 async def test_run_scan_retries_once_then_raises(store_in_tmp, monkeypatch):
     calls = {"n": 0}
 
-    async def _boom(prompt, session_id=None, files=None):
+    async def _boom(prompt, session_id=None, files=None, **kwargs):
         calls["n"] += 1
         raise RuntimeError("cli down")
 
