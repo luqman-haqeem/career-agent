@@ -75,10 +75,17 @@ def _fake_reply(jobs_json):
 async def test_run_scan_records_and_returns(store_in_tmp, monkeypatch):
     payload = ('[{"title":"SRE","company":"Acme","location":"KL",'
                '"url":"https://x.io/1","fit_score":8,"why_fit":"aws","why_aligns":"pivot"}]')
-    monkeypatch.setattr(agent, "run_turn", _fake_reply(payload))
+    recorded = {"model": "NOT_SET"}
+
+    async def _recording_reply(prompt, session_id=None, files=None, **kwargs):
+        recorded["model"] = kwargs.get("model")
+        return payload, "sess-1"
+
+    monkeypatch.setattr(agent, "run_turn", _recording_reply)
     matches = await scan.run_scan()
     assert len(matches) == 1
     assert matches[0]["id"] in store_in_tmp.seen_ids()
+    assert recorded["model"] == config.model_for("scan")
 
 
 async def test_run_scan_dedupes_on_second_run(store_in_tmp, monkeypatch):

@@ -55,6 +55,8 @@ async def classify_task(text: str) -> str:
     except Exception:  # noqa: BLE001 - classification must never break a chat
         return "default"
     label = (content or "").strip().lower()
+    if label in ("critique", "resume", "default"):
+        return label
     for cand in ("critique", "resume"):
         if cand in label:
             return cand

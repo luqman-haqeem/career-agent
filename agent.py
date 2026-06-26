@@ -4,7 +4,7 @@ Single backend: OpenCode (`opencode`), pointed at whatever model/provider
 you've configured. See docs/opencode-setup.md.
 
 Contract:
-    run_turn(user_message, session_id=None, files=None) -> (reply_text, session_id)
+    run_turn(user_message, session_id=None, files=None, model=None) -> (reply_text, session_id)
 """
 import asyncio
 import json

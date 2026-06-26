@@ -70,6 +70,7 @@ def routing_active() -> bool:
     """
     return model_for("critique") != OPENCODE_MODEL or model_for("resume") != OPENCODE_MODEL
 
+
 # Comma-separated Telegram user IDs allowed to use the bot. Empty = allow all
 # (you'll be warned). Send /start to learn your ID, then lock it down here.
 _allowed = os.getenv("ALLOWED_USER_IDS", "").strip()
