@@ -1,4 +1,4 @@
-"""Telegram front-end for the Career Agent (runs on your Claude subscription)."""
+"""Telegram front-end for the Career Agent (runs on OpenCode + OpenRouter)."""
 import asyncio
 import datetime as dt
 import html
@@ -13,6 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
+import classify
 import config
 import jobs_store
 import onboarding
@@ -22,7 +23,7 @@ import scan
 import telegram_format
 from agent import run_turn
 
-# Files Claude Code's Read tool handles natively (no pre-extraction needed).
+# Files OpenCode's read tool handles natively (no pre-extraction needed).
 NATIVE_READ_EXT = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
                    ".txt", ".md", ".markdown", ".csv"}
 
@@ -44,7 +45,7 @@ _STATIC_INTRO = (
     "Commands: /help  /reset  /onboard")
 
 
-# --- Per-chat session id (Claude conversation continuity) ------------------
+# --- Per-chat session id (OpenCode conversation continuity) ----------------
 def _session_path(chat_id: int) -> Path:
     return config.SESSIONS_DIR / f"{chat_id}.json"
 
@@ -65,42 +66,13 @@ def save_session_id(chat_id: int, session_id) -> None:
             json.dumps({"session_id": session_id}), encoding="utf-8")
 
 
-def _transcript_path(session_id: str):
-    """Locate Claude Code's JSONL transcript for a session, if it exists.
-
-    The CLI stores it under ~/.claude/projects/<escaped-cwd>/<session_id>.jsonl;
-    we just search by name so we don't depend on the exact folder encoding.
-    """
-    if not session_id:
-        return None
-    root = Path.home() / ".claude" / "projects"
-    if not root.exists():
-        return None
-    for p in root.rglob(f"{session_id}.jsonl"):
-        return p
-    return None
-
-
 def _context_stats(chat_id: int) -> dict:
-    """Return how big the current conversation is (entries + size).
+    """Return whether a conversation is currently active.
 
-    Sizing relies on the Claude CLI transcript file. The OpenCode backend stores
-    sessions in its own location, so there we only report whether a session is
-    active (sized=False) rather than guessing a byte count.
+    OpenCode stores session state in its own location, so we report only
+    whether a session is active rather than guessing a byte count.
     """
-    session_id = load_session_id(chat_id)
-    if config.AI_BACKEND == "opencode":
-        return {"active": bool(session_id), "sized": False}
-    path = _transcript_path(session_id) if session_id else None
-    if not path:
-        return {"active": False, "sized": True, "entries": 0, "kb": 0}
-    try:
-        kb = round(path.stat().st_size / 1024)
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            entries = sum(1 for _ in fh)
-    except OSError:
-        return {"active": bool(session_id), "sized": True, "entries": 0, "kb": 0}
-    return {"active": True, "sized": True, "entries": entries, "kb": kb}
+    return {"active": bool(load_session_id(chat_id)), "sized": False}
 
 
 def _status_text(chat_id: int) -> str:
@@ -110,26 +82,9 @@ def _status_text(chat_id: int) -> str:
                 "🟢 Fresh — no active conversation yet. The next message starts one.\n\n"
                 "Your long-term memory (profile, goals, experiences) is separate and "
                 "always kept.")
-    if not s.get("sized", True):
-        return ("📊 <b>Conversation status</b>\n\n"
-                f"🟢 Active conversation (backend: <b>{config.AI_BACKEND}</b>).\n"
-                "Size isn't tracked on this backend, but a long chat can still slow "
-                "replies — reset anytime to start fresh.\n\n"
-                "Your long-term memory (profile, goals, experiences) is <b>separate</b> "
-                "and untouched by a reset.\n\n"
-                "Tap below to clear the conversation and start fresh.")
-    entries, kb = s["entries"], s["kb"]
-    if entries < 40:
-        state = "🟢 Fresh — fast replies."
-    elif entries < 100:
-        state = "🟡 Getting long — replies may start to slow down."
-    else:
-        state = "🔴 Large — consider resetting to speed things up."
     return ("📊 <b>Conversation status</b>\n\n"
-            "This is the chat history that reloads <i>every</i> time you message me.\n"
-            f"• Entries: <b>{entries}</b>\n"
-            f"• Size: <b>~{kb} KB</b>\n"
-            f"• State: {state}\n\n"
+            "🟢 Active conversation.\n"
+            "A long chat can still slow replies — reset anytime to start fresh.\n\n"
             "Your long-term memory (profile, goals, experiences) is <b>separate</b> "
             "and untouched by a reset.\n\n"
             "Tap below to clear the conversation and start fresh.")
@@ -286,20 +241,34 @@ async def _launch_onboarding(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     await _send(update, text)
 
 
+async def _model_for_message(text: str) -> str | None:
+    """Pick the model for a TYPED message. None = default model.
+
+    Only classifies when routing is active (a distinct critique/resume model is
+    configured), so there's no classifier cost unless the user opted in.
+    """
+    if not config.routing_active():
+        return None
+    # Onboarding turns run on the default model (spec: onboarding stays on default).
+    if onboarding.status() == "in_progress":
+        return None
+    return config.model_for(await classify.classify_task(text))
+
+
 async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
                          prompt: str, files=None) -> None:
     """Run one agent turn for this chat and send back text + any new resume.
 
-    `files` are upload paths attached for backends that need them (OpenCode uses
-    --file; the Claude path reads via the path in the prompt and ignores them).
+    `files` are upload paths passed to OpenCode via --file.
     """
     chat_id = update.effective_chat.id
     session_id = load_session_id(chat_id)
     before = _resume_snapshot()
+    model = await _model_for_message(prompt)
 
     typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
     try:
-        text, session_id = await run_turn(prompt, session_id, files=files)
+        text, session_id = await run_turn(prompt, session_id, files=files, model=model)
     except Exception as e:  # noqa: BLE001
         log.exception("turn failed")
         await update.message.reply_text(f"⚠️ Something went wrong: {e}")
@@ -505,7 +474,7 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
         f"📄 Tailoring your resume for {job.get('title')} @ {job.get('company')} — about a minute…")
     typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
     try:
-        text, session_id = await run_turn(prompt, session_id)
+        text, session_id = await run_turn(prompt, session_id, model=config.model_for("resume"))
     except Exception as e:  # noqa: BLE001
         log.exception("resume generation failed")
         await ctx.bot.send_message(
@@ -693,11 +662,10 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 def main() -> None:
     if not config.TELEGRAM_BOT_TOKEN:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env (get it from @BotFather).")
-    if config.AI_BACKEND == "opencode" and not (
-            shutil.which(config.OPENCODE_BIN) or Path(config.OPENCODE_BIN).exists()):
+    if not (shutil.which(config.OPENCODE_BIN) or Path(config.OPENCODE_BIN).exists()):
         raise SystemExit(
-            f"AI_BACKEND=opencode but the OpenCode CLI ('{config.OPENCODE_BIN}') was "
-            "not found. Install it and/or set OPENCODE_BIN. See docs/opencode-setup.md.")
+            f"The OpenCode CLI ('{config.OPENCODE_BIN}') was not found. "
+            "Install it and/or set OPENCODE_BIN. See docs/opencode-setup.md.")
     if not config.ALLOWED_USER_IDS:
         log.warning("ALLOWED_USER_IDS is empty — the bot is open to anyone who "
                     "finds it. Send /start to learn your ID, then lock it down.")
@@ -740,8 +708,7 @@ def main() -> None:
             log.info("Job discovery scheduled daily at %02d:00 %s on weekdays %s.",
                      config.SCAN_HOUR, config.SCAN_TZ, sorted(config.SCAN_WEEKDAYS))
 
-    backend_desc = ("Claude subscription (claude_cli)" if config.AI_BACKEND != "opencode"
-                    else f"OpenCode (model: {config.OPENCODE_MODEL or 'default'})")
+    backend_desc = f"OpenCode (model: {config.OPENCODE_MODEL or 'default'})"
     log.info("Career Agent is running — backend: %s. Ctrl+C to stop.", backend_desc)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

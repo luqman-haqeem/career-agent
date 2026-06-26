@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
 # gosu: entrypoint fixes volume ownership as root then drops privileges.
-# curl/ca-certificates: install the claude CLI + tectonic.
+# curl/ca-certificates: install the OpenCode CLI + tectonic.
 # fontconfig + lib{graphite2,harfbuzz,freetype}: runtime deps of the tectonic binary.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -21,7 +21,7 @@ RUN groupadd -g ${APP_GID} appuser \
     && useradd -m -u ${APP_UID} -g ${APP_GID} appuser
 
 ENV HOME=/home/appuser
-ENV PATH="/home/appuser/.local/bin:${PATH}"
+ENV PATH="/home/appuser/.local/bin:/home/appuser/.opencode/bin:${PATH}"
 
 WORKDIR /app
 
@@ -29,9 +29,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install the native Claude Code CLI as appuser (-> /home/appuser/.local/bin).
+# Install the OpenCode CLI as appuser (-> /home/appuser/.opencode/bin).
 USER appuser
-RUN curl -fsSL https://claude.ai/install.sh | bash
+RUN curl -fsSL https://opencode.ai/install | bash
 USER root
 
 # App source.
