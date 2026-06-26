@@ -13,6 +13,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
+import classify
 import config
 import jobs_store
 import onboarding
@@ -240,6 +241,17 @@ async def _launch_onboarding(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     await _send(update, text)
 
 
+async def _model_for_message(text: str):
+    """Pick the model for a TYPED message. None = default model.
+
+    Only classifies when routing is active (a distinct critique/resume model is
+    configured), so there's no classifier cost unless the user opted in.
+    """
+    if not config.routing_active():
+        return None
+    return config.model_for(await classify.classify_task(text))
+
+
 async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
                          prompt: str, files=None) -> None:
     """Run one agent turn for this chat and send back text + any new resume.
@@ -249,10 +261,11 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     chat_id = update.effective_chat.id
     session_id = load_session_id(chat_id)
     before = _resume_snapshot()
+    model = await _model_for_message(prompt)
 
     typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
     try:
-        text, session_id = await run_turn(prompt, session_id, files=files)
+        text, session_id = await run_turn(prompt, session_id, files=files, model=model)
     except Exception as e:  # noqa: BLE001
         log.exception("turn failed")
         await update.message.reply_text(f"⚠️ Something went wrong: {e}")
@@ -458,7 +471,7 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
         f"📄 Tailoring your resume for {job.get('title')} @ {job.get('company')} — about a minute…")
     typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
     try:
-        text, session_id = await run_turn(prompt, session_id)
+        text, session_id = await run_turn(prompt, session_id, model=config.model_for("resume"))
     except Exception as e:  # noqa: BLE001
         log.exception("resume generation failed")
         await ctx.bot.send_message(
