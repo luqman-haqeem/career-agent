@@ -55,7 +55,7 @@ def test_parse_skips_non_text_parts():
 def test_run_turn_uses_opencode_path(monkeypatch):
     calls = {}
 
-    async def fake_opencode(user_message, session_id=None, files=None):
+    async def fake_opencode(user_message, session_id=None, files=None, model=None):
         calls["msg"] = user_message
         return "reply-text", "ses_new"
 
@@ -65,6 +65,31 @@ def test_run_turn_uses_opencode_path(monkeypatch):
     assert reply == "reply-text"
     assert sid == "ses_new"
     assert calls["msg"] == "hi"
+
+
+def test_build_args_uses_passed_model():
+    args = agent._opencode_build_args("hi", None, None, model="openrouter/x/y")
+    assert "--model" in args
+    assert args[args.index("--model") + 1] == "openrouter/x/y"
+
+
+def test_build_args_falls_back_to_default_model(monkeypatch):
+    monkeypatch.setattr(agent.config, "OPENCODE_MODEL", "openrouter/default/m")
+    args = agent._opencode_build_args("hi", None, None, model=None)
+    assert args[args.index("--model") + 1] == "openrouter/default/m"
+
+
+def test_run_turn_threads_model(monkeypatch):
+    calls = {}
+
+    async def fake_opencode(user_message, session_id=None, files=None, model=None):
+        calls["model"] = model
+        return "r", "s"
+
+    monkeypatch.setattr(agent, "_opencode_run_turn", fake_opencode)
+    import asyncio
+    asyncio.run(agent.run_turn("hi", model="openrouter/x/y"))
+    assert calls["model"] == "openrouter/x/y"
 
 
 def test_no_claude_backend_symbols():

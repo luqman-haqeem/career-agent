@@ -13,15 +13,16 @@ import os
 import config
 
 # --- opencode backend ------------------------------------------------------
-def _opencode_build_args(user_message: str, session_id: str | None, files) -> list:
+def _opencode_build_args(user_message: str, session_id: str | None, files, model=None) -> list:
     args = [
         config.OPENCODE_BIN, "run", user_message,
         "--format", "json",
         "--dir", str(config.BASE_DIR),
         "--dangerously-skip-permissions",
     ]
-    if config.OPENCODE_MODEL:
-        args += ["--model", config.OPENCODE_MODEL]
+    chosen = model or config.OPENCODE_MODEL
+    if chosen:
+        args += ["--model", chosen]
     if session_id:
         args += ["--session", session_id]
     for f in files or []:
@@ -29,9 +30,9 @@ def _opencode_build_args(user_message: str, session_id: str | None, files) -> li
     return args
 
 
-async def _opencode_invoke(user_message: str, session_id: str | None, files):
+async def _opencode_invoke(user_message: str, session_id: str | None, files, model=None):
     proc = await asyncio.create_subprocess_exec(
-        *_opencode_build_args(user_message, session_id, files),
+        *_opencode_build_args(user_message, session_id, files, model),
         cwd=str(config.BASE_DIR),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -80,13 +81,13 @@ def _opencode_parse(out: str, fallback_session: str | None):
     return reply, session_id
 
 
-async def _opencode_run_turn(user_message: str, session_id: str | None = None, files=None):
+async def _opencode_run_turn(user_message: str, session_id: str | None = None, files=None, model=None):
     """Run one turn via the OpenCode CLI. Returns (reply_text, session_id)."""
-    rc, out, err = await _opencode_invoke(user_message, session_id, files)
+    rc, out, err = await _opencode_invoke(user_message, session_id, files, model)
 
     # If resuming a stale/expired session failed, retry once fresh.
     if rc != 0 and session_id:
-        rc, out, err = await _opencode_invoke(user_message, None, files)
+        rc, out, err = await _opencode_invoke(user_message, None, files, model)
 
     if rc != 0:
         raise RuntimeError(err.strip() or out.strip() or f"opencode exited with code {rc}")
@@ -96,6 +97,9 @@ async def _opencode_run_turn(user_message: str, session_id: str | None = None, f
 
 
 # --- dispatcher ------------------------------------------------------------
-async def run_turn(user_message: str, session_id: str | None = None, files=None):
-    """Run one user turn via OpenCode. Returns (reply_text, session_id)."""
-    return await _opencode_run_turn(user_message, session_id, files)
+async def run_turn(user_message: str, session_id: str | None = None, files=None, model=None):
+    """Run one user turn via OpenCode. Returns (reply_text, session_id).
+
+    `model` overrides config.OPENCODE_MODEL for this turn (None = default).
+    """
+    return await _opencode_run_turn(user_message, session_id, files, model)
