@@ -70,6 +70,16 @@ def test_classify_exception_falls_back(monkeypatch):
     assert asyncio.run(classify.classify_task("hi")) == "default"
 
 
+def test_classify_malformed_200_falls_back(monkeypatch):
+    class _BadResp:
+        status_code = 200
+        def json(self):
+            return {}  # no "choices" key -> KeyError, must be caught
+
+    _patch(monkeypatch, resp=_BadResp())
+    assert asyncio.run(classify.classify_task("hi")) == "default"
+
+
 def test_classify_no_key_falls_back(monkeypatch):
     _patch(monkeypatch, resp=_FakeResp(content="critique"), key=None)
     assert asyncio.run(classify.classify_task("hi")) == "default"

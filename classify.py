@@ -33,16 +33,16 @@ async def classify_task(text: str) -> str:
     key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not key or not (text or "").strip():
         return "default"
-    payload = {
-        "model": _api_model(),
-        "messages": [
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": text[:2000]},
-        ],
-        "max_tokens": 5,
-        "temperature": 0,
-    }
     try:
+        payload = {
+            "model": _api_model(),
+            "messages": [
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": text[:2000]},
+            ],
+            "max_tokens": 5,
+            "temperature": 0,
+        }
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.post(
                 _ENDPOINT,
