@@ -5,6 +5,10 @@ import config
 
 
 def test_opencode_model_has_openrouter_default(monkeypatch):
+    # Verify the hardcoded code default, independent of any local .env that may
+    # set OPENCODE_MODEL: neutralize load_dotenv so reload can't re-inject it.
+    import dotenv
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: False)
     monkeypatch.delenv("OPENCODE_MODEL", raising=False)
     import importlib
     importlib.reload(config)
