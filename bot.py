@@ -110,6 +110,7 @@ def _register_critique(name: str) -> str:
 
 
 def _critique_keyboard(token: str) -> InlineKeyboardMarkup:
+    """Return a one-button keyboard for the Critique-it offer."""
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("📝 Critique it", callback_data=f"crit:{token}")]])
 
@@ -303,10 +304,11 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     await _deliver_new_files(update, before)
 
 
-async def _send_doc_chat(bot, chat_id: int, path: Path) -> None:
+async def _send_doc_chat(bot, chat_id: int, path: Path, reply_markup=None) -> None:
     try:
         with open(path, "rb") as fh:
-            await bot.send_document(chat_id, document=fh, filename=path.name)
+            await bot.send_document(
+                chat_id, document=fh, filename=path.name, reply_markup=reply_markup)
     except Exception as e:  # noqa: BLE001
         log.warning("could not send %s: %s", path, e)
 
@@ -329,16 +331,23 @@ async def _deliver_changed_resumes(bot, chat_id: int, before: dict) -> None:
         path = config.RESUMES_DIR / name
         ext = path.suffix.lower()
         if ext == ".json":
+            token = _register_critique(name)
+            kb = _critique_keyboard(token)
+            button_sent = False
             try:
                 pdf = await asyncio.to_thread(render.render_json_to_pdf, path)
-                await _send_doc_chat(bot, chat_id, pdf)
+                await _send_doc_chat(bot, chat_id, pdf, reply_markup=kb)
+                button_sent = True
             except Exception as e:  # noqa: BLE001
                 log.warning("PDF render failed for %s: %s", name, e)
                 await bot.send_message(
                     chat_id,
                     "⚠️ I built your resume but couldn't render the PDF. "
                     "Sending the data file instead.")
-            await _send_doc_chat(bot, chat_id, path)  # JSON Resume file (portable)
+            # JSON Resume file (portable). If the PDF didn't go out, the button
+            # rides on the JSON so the one-tap critique is never lost.
+            await _send_doc_chat(
+                bot, chat_id, path, reply_markup=None if button_sent else kb)
         elif ext in SEND_BACK_EXT:
             await _send_doc_chat(bot, chat_id, path)
 
