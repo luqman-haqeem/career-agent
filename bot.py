@@ -5,6 +5,7 @@ import html
 import json
 import logging
 import re
+import secrets
 import shutil
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -97,14 +98,14 @@ def _status_keyboard() -> InlineKeyboardMarkup:
 
 # --- Critique-it button ----------------------------------------------------
 _critique_tokens: dict[str, str] = {}  # token -> resume filename (in-memory)
-_critique_seq = 0                      # monotonic source of short tokens
 
 
 def _register_critique(name: str) -> str:
-    """Map a short token to a resume filename for a 'Critique it' button."""
-    global _critique_seq
-    _critique_seq += 1
-    token = f"c{_critique_seq}"
+    """Map a collision-resistant token to a resume filename for a 'Critique it'
+    button. Tokens are random (not a restart-resettable counter) so a button
+    from a previous process never resolves to a different resume after a
+    restart — it misses the map and hits the graceful 'tap expired' path."""
+    token = secrets.token_urlsafe(6)
     _critique_tokens[token] = name
     return token
 
@@ -340,6 +341,8 @@ async def _deliver_changed_resumes(bot, chat_id: int, before: dict) -> None:
             try:
                 pdf = await asyncio.to_thread(render.render_json_to_pdf, path)
                 await _send_doc_chat(bot, chat_id, pdf, reply_markup=kb)
+                # _send_doc_chat swallows its own send errors, so button_sent means
+                # "render succeeded and the send call didn't raise" — not a delivery guarantee.
                 button_sent = True
             except Exception as e:  # noqa: BLE001
                 log.warning("PDF render failed for %s: %s", name, e)
@@ -528,13 +531,14 @@ async def _on_critique_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     query = update.callback_query
     token = data.split(":", 1)[1] if ":" in data else ""
     name = _critique_tokens.get(token)
-    if not name:  # map cleared by a restart, etc.
+    if not name:  # map cleared by a restart, unknown/expired token, etc.
         await query.answer("Tap expired — just type 'critique it'.", show_alert=True)
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:  # noqa: BLE001 - message too old to edit
             pass
         return
+    _critique_tokens.pop(token, None)  # single-use: bound the map + close the double-tap window
     # Consume the button first: this is also the double-tap guard.
     try:
         await query.edit_message_reply_markup(reply_markup=None)

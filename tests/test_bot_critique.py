@@ -39,11 +39,9 @@ class _FakeCtx:
 @pytest.fixture(autouse=True)
 def reset_critique_state():
     saved_tokens = dict(bot._critique_tokens)
-    saved_seq = bot._critique_seq
     yield
     bot._critique_tokens.clear()
     bot._critique_tokens.update(saved_tokens)
-    bot._critique_seq = saved_seq
 
 
 def test_register_critique_roundtrips_and_is_unique():
@@ -161,4 +159,16 @@ def test_critique_tap_with_stale_token_is_graceful(monkeypatch):
     asyncio.run(bot._on_critique_action(_FakeUpdate(q), _FakeCtx, "crit:gone"))
 
     assert q.answered[0].startswith("Tap expired")
+    assert q.answered[1] is True   # show_alert=True on the 'tap expired' modal
     assert q.markup_edits == [None]          # button still removed
+
+
+def test_old_token_misses_after_restart_simulation():
+    # Resume A registered before a "restart".
+    tok_a = bot._register_critique("resume-A.json")
+    # Simulate a process restart: the in-memory map is cleared.
+    bot._critique_tokens.clear()
+    # Resume B registered after restart must NOT reuse A's token.
+    tok_b = bot._register_critique("resume-B.json")
+    assert tok_b != tok_a                      # random tokens don't collide
+    assert tok_a not in bot._critique_tokens   # A's old button now misses -> graceful path
