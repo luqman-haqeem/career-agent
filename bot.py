@@ -95,6 +95,25 @@ def _status_keyboard() -> InlineKeyboardMarkup:
         [[InlineKeyboardButton("🧹 Reset context", callback_data="reset_context")]])
 
 
+# --- Critique-it button ----------------------------------------------------
+_critique_tokens: dict[str, str] = {}  # token -> resume filename (in-memory)
+_critique_seq = 0                      # monotonic source of short tokens
+
+
+def _register_critique(name: str) -> str:
+    """Map a short token to a resume filename for a 'Critique it' button."""
+    global _critique_seq
+    _critique_seq += 1
+    token = f"c{_critique_seq}"
+    _critique_tokens[token] = name
+    return token
+
+
+def _critique_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📝 Critique it", callback_data=f"crit:{token}")]])
+
+
 def _clear_session(chat_id: int) -> None:
     p = _session_path(chat_id)
     if p.exists():
