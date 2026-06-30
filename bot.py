@@ -208,6 +208,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if data.startswith("job:"):
         await _on_job_action(update, ctx, data)
         return
+    if data.startswith("crit:"):
+        await _on_critique_action(update, ctx, data)
+        return
     if query.data == "reset_context":
         _clear_session(update.effective_chat.id)
         await query.answer("Conversation cleared ✅")
@@ -517,6 +520,48 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
     jobs_store.set_decision(jid, "applied")
     await _send_chat(ctx.bot, chat_id, text)
     await _deliver_changed_resumes(ctx.bot, chat_id, before)
+
+
+async def _on_critique_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+                              data: str) -> None:
+    """One-tap critique: score the just-generated resume on the critique model."""
+    query = update.callback_query
+    token = data.split(":", 1)[1] if ":" in data else ""
+    name = _critique_tokens.get(token)
+    if not name:  # map cleared by a restart, etc.
+        await query.answer("Tap expired — just type 'critique it'.", show_alert=True)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001 - message too old to edit
+            pass
+        return
+    # Consume the button first: this is also the double-tap guard.
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001
+        pass
+    await query.answer("Scoring your resume…")
+
+    chat_id = update.effective_chat.id
+    session_id = load_session_id(chat_id)
+    prompt = (
+        f"Critique resumes/{name} and score it against the JD from this "
+        "conversation, following your normal critique rules (the compact Telegram "
+        "scorecard). If you can't tell which JD this resume targets, ask me to "
+        "paste it rather than guessing."
+    )
+    typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
+    try:
+        text, session_id = await run_turn(
+            prompt, session_id, model=config.model_for("critique"))
+    except Exception as e:  # noqa: BLE001
+        log.exception("critique failed")
+        await ctx.bot.send_message(chat_id, f"⚠️ Couldn't run the critique: {e}")
+        return
+    finally:
+        typing.cancel()
+    save_session_id(chat_id, session_id)
+    await _send_chat(ctx.bot, chat_id, text)
 
 
 async def _do_scan(bot, chat_id: int, manual: bool) -> None:

@@ -1,9 +1,39 @@
 import asyncio
-import config
 
 import pytest
 
 import bot
+import config
+
+
+class _FakeQuery:
+    def __init__(self, data):
+        self.data = data
+        self.answered = None
+        self.markup_edits = []
+
+    async def answer(self, text=None, show_alert=False):
+        self.answered = (text, show_alert)
+
+    async def edit_message_reply_markup(self, reply_markup=None):
+        self.markup_edits.append(reply_markup)
+
+
+class _FakeUpdate:
+    def __init__(self, query, chat_id=123):
+        self.callback_query = query
+        class _Chat:
+            id = chat_id
+        self.effective_chat = _Chat()
+
+
+class _FakeCtx:
+    class bot:  # noqa: N801 - mimic telegram ctx.bot namespace
+        sent = []
+
+        @staticmethod
+        async def send_message(chat_id, text):
+            _FakeCtx.bot.sent.append((chat_id, text))
 
 
 @pytest.fixture(autouse=True)
@@ -85,3 +115,50 @@ def test_delivery_falls_back_to_json_button_when_pdf_render_fails(monkeypatch):
     assert [n for n, _ in sent] == ["acme-backend.json"]
     assert sent[0][1] is not None
     assert sent[0][1].inline_keyboard[0][0].callback_data.startswith("crit:")
+
+
+def test_critique_tap_runs_on_critique_model(monkeypatch):
+    _FakeCtx.bot.sent = []
+    bot._critique_tokens["c42"] = "acme-backend.json"
+
+    captured = {}
+
+    async def fake_run_turn(prompt, session_id, model=None):
+        captured["prompt"] = prompt
+        captured["model"] = model
+        return "📄 acme — 82/100", "sess-1"
+
+    sent_text = {}
+
+    async def fake_send_chat(bot_, chat_id, text):
+        sent_text["text"] = text
+
+    async def fake_keep_typing(bot_, chat_id):
+        return
+
+    monkeypatch.setattr(bot, "run_turn", fake_run_turn)
+    monkeypatch.setattr(bot, "_send_chat", fake_send_chat)
+    monkeypatch.setattr(bot, "_keep_typing", fake_keep_typing)
+    monkeypatch.setattr(bot, "load_session_id", lambda c: "sess-0")
+    monkeypatch.setattr(bot, "save_session_id", lambda c, s: None)
+    monkeypatch.setattr(config, "model_for", lambda task: f"model-{task}")
+
+    q = _FakeQuery("crit:c42")
+    asyncio.run(bot._on_critique_action(_FakeUpdate(q), _FakeCtx, "crit:c42"))
+
+    assert captured["model"] == "model-critique"
+    assert "resumes/acme-backend.json" in captured["prompt"]
+    assert q.markup_edits == [None]          # button stripped exactly once
+    assert sent_text["text"] == "📄 acme — 82/100"
+
+
+def test_critique_tap_with_stale_token_is_graceful(monkeypatch):
+    async def fake_run_turn(*a, **k):
+        raise AssertionError("must not run a turn for a stale token")
+
+    monkeypatch.setattr(bot, "run_turn", fake_run_turn)
+    q = _FakeQuery("crit:gone")
+    asyncio.run(bot._on_critique_action(_FakeUpdate(q), _FakeCtx, "crit:gone"))
+
+    assert q.answered[0].startswith("Tap expired")
+    assert q.markup_edits == [None]          # button still removed
