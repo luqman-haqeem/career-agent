@@ -1,9 +1,15 @@
 import importlib
 
+import dotenv
+
 import config
 
 
 def _reload(monkeypatch, **env):
+    # Neutralize load_dotenv so reload can't re-inject a developer .env (which may
+    # set RESUME_MODEL/CRITIQUE_MODEL etc.) and undo the delenv below. The test
+    # must verify behavior purely from the env vars it sets.
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: False)
     for k in ("SCAN_MODEL", "RESUME_MODEL", "CRITIQUE_MODEL",
               "CLASSIFIER_MODEL", "OPENCODE_MODEL"):
         monkeypatch.delenv(k, raising=False)
