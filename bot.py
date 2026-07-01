@@ -5,6 +5,7 @@ import html
 import json
 import logging
 import re
+import secrets
 import shutil
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -93,6 +94,26 @@ def _status_text(chat_id: int) -> str:
 def _status_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("🧹 Reset context", callback_data="reset_context")]])
+
+
+# --- Critique-it button ----------------------------------------------------
+_critique_tokens: dict[str, str] = {}  # token -> resume filename (in-memory)
+
+
+def _register_critique(name: str) -> str:
+    """Map a collision-resistant token to a resume filename for a 'Critique it'
+    button. Tokens are random (not a restart-resettable counter) so a button
+    from a previous process never resolves to a different resume after a
+    restart — it misses the map and hits the graceful 'tap expired' path."""
+    token = secrets.token_urlsafe(6)
+    _critique_tokens[token] = name
+    return token
+
+
+def _critique_keyboard(token: str) -> InlineKeyboardMarkup:
+    """Return a one-button keyboard for the Critique-it offer."""
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📝 Critique it", callback_data=f"crit:{token}")]])
 
 
 def _clear_session(chat_id: int) -> None:
@@ -187,6 +208,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     data = query.data or ""
     if data.startswith("job:"):
         await _on_job_action(update, ctx, data)
+        return
+    if data.startswith("crit:"):
+        await _on_critique_action(update, ctx, data)
         return
     if query.data == "reset_context":
         _clear_session(update.effective_chat.id)
@@ -284,10 +308,11 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     await _deliver_new_files(update, before)
 
 
-async def _send_doc_chat(bot, chat_id: int, path: Path) -> None:
+async def _send_doc_chat(bot, chat_id: int, path: Path, reply_markup=None) -> None:
     try:
         with open(path, "rb") as fh:
-            await bot.send_document(chat_id, document=fh, filename=path.name)
+            await bot.send_document(
+                chat_id, document=fh, filename=path.name, reply_markup=reply_markup)
     except Exception as e:  # noqa: BLE001
         log.warning("could not send %s: %s", path, e)
 
@@ -310,16 +335,25 @@ async def _deliver_changed_resumes(bot, chat_id: int, before: dict) -> None:
         path = config.RESUMES_DIR / name
         ext = path.suffix.lower()
         if ext == ".json":
+            token = _register_critique(name)
+            kb = _critique_keyboard(token)
+            button_sent = False
             try:
                 pdf = await asyncio.to_thread(render.render_json_to_pdf, path)
-                await _send_doc_chat(bot, chat_id, pdf)
+                await _send_doc_chat(bot, chat_id, pdf, reply_markup=kb)
+                # _send_doc_chat swallows its own send errors, so button_sent means
+                # "render succeeded and the send call didn't raise" — not a delivery guarantee.
+                button_sent = True
             except Exception as e:  # noqa: BLE001
                 log.warning("PDF render failed for %s: %s", name, e)
                 await bot.send_message(
                     chat_id,
                     "⚠️ I built your resume but couldn't render the PDF. "
                     "Sending the data file instead.")
-            await _send_doc_chat(bot, chat_id, path)  # JSON Resume file (portable)
+            # JSON Resume file (portable). If the PDF didn't go out, the button
+            # rides on the JSON so the one-tap critique is never lost.
+            await _send_doc_chat(
+                bot, chat_id, path, reply_markup=None if button_sent else kb)
         elif ext in SEND_BACK_EXT:
             await _send_doc_chat(bot, chat_id, path)
 
@@ -489,6 +523,49 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
     jobs_store.set_decision(jid, "applied")
     await _send_chat(ctx.bot, chat_id, text)
     await _deliver_changed_resumes(ctx.bot, chat_id, before)
+
+
+async def _on_critique_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+                              data: str) -> None:
+    """One-tap critique: score the just-generated resume on the critique model."""
+    query = update.callback_query
+    token = data.split(":", 1)[1] if ":" in data else ""
+    name = _critique_tokens.get(token)
+    if not name:  # map cleared by a restart, unknown/expired token, etc.
+        await query.answer("Tap expired — just type 'critique it'.", show_alert=True)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001 - message too old to edit
+            pass
+        return
+    _critique_tokens.pop(token, None)  # single-use: bound the map + close the double-tap window
+    # Consume the button first: this is also the double-tap guard.
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:  # noqa: BLE001
+        pass
+    await query.answer("Scoring your resume…")
+
+    chat_id = update.effective_chat.id
+    session_id = load_session_id(chat_id)
+    prompt = (
+        f"Critique resumes/{name} and score it against the JD from this "
+        "conversation, following your normal critique rules (the compact Telegram "
+        "scorecard). If you can't tell which JD this resume targets, ask me to "
+        "paste it rather than guessing."
+    )
+    typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
+    try:
+        text, session_id = await run_turn(
+            prompt, session_id, model=config.model_for("critique"))
+    except Exception as e:  # noqa: BLE001
+        log.exception("critique failed")
+        await ctx.bot.send_message(chat_id, f"⚠️ Couldn't run the critique: {e}")
+        return
+    finally:
+        typing.cancel()
+    save_session_id(chat_id, session_id)
+    await _send_chat(ctx.bot, chat_id, text)
 
 
 async def _do_scan(bot, chat_id: int, manual: bool) -> None:
