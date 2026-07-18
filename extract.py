@@ -9,6 +9,7 @@ OpenRouter call.
 Every function degrades to None on any failure (missing library, missing API
 key, API error, unreadable file) so an upload never crashes the bot.
 """
+import asyncio
 import base64
 import logging
 import os
@@ -35,6 +36,25 @@ _MIME_BY_EXT = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
     ".gif": "image/gif", ".webp": "image/webp",
 }
+
+
+def _content_to_text(content) -> str:
+    """Normalize an OpenRouter message content to text.
+
+    Content is usually a string, but some providers return a list of parts
+    (e.g. [{"type": "text", "text": "..."}]). Concatenate the text of those.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, dict) and isinstance(p.get("text"), str):
+                parts.append(p["text"])
+            elif isinstance(p, str):
+                parts.append(p)
+        return "".join(parts)
+    return ""
 
 
 async def _vision_transcribe(image_bytes: bytes, mime: str) -> str | None:
@@ -69,12 +89,18 @@ async def _vision_transcribe(image_bytes: bytes, mime: str) -> str | None:
     except Exception:  # noqa: BLE001 - extraction must never break an upload
         log.exception("vision transcribe failed")
         return None
-    text = (content or "").strip()
+    text = _content_to_text(content).strip()
     return text or None
 
 
-async def extract_pdf(path) -> str | None:
-    """Text of a PDF: embedded text if present, else vision-transcribe pages."""
+def _read_pdf_pages(path):
+    """Synchronous PyMuPDF work: embedded text per page + rendered scans.
+
+    Returns (page_texts, renders, dropped) where renders is a list of
+    (page_index, png_bytes) for the no-text pages within the vision budget, or
+    None if PyMuPDF is missing or the PDF can't be read. Runs in a worker thread
+    (see extract_pdf) so it never blocks the event loop.
+    """
     try:
         import fitz  # PyMuPDF
     except ImportError:
@@ -88,35 +114,48 @@ async def extract_pdf(path) -> str | None:
     try:
         page_texts = [doc.load_page(i).get_text().strip()
                       for i in range(doc.page_count)]
-        # Fast path: every page has real embedded text -> no vision, no cost.
-        if page_texts and all(len(t) >= _MIN_PDF_TEXT for t in page_texts):
-            return "\n\n".join(page_texts).strip() or None
-        # Mixed/scanned path: vision-transcribe only the pages that lack
-        # real embedded text, keeping embedded text where it exists.
+        # Render only the pages that lack real embedded text (scanned), capped.
         budget = _MAX_SCAN_PAGES
         dropped = 0
-        chunks = []
+        renders = []
         for i, t in enumerate(page_texts):
             if len(t) >= _MIN_PDF_TEXT:
-                chunks.append(t)
                 continue
             if budget <= 0:
                 dropped += 1
                 continue
             budget -= 1
-            png = doc.load_page(i).get_pixmap(dpi=200).tobytes("png")
-            transcribed = await _vision_transcribe(png, "image/png")
-            if transcribed:
-                chunks.append(transcribed)
-        if dropped:
-            log.warning("scanned PDF: dropped %d page(s) beyond vision budget",
-                        dropped)
-        return "\n\n".join(c for c in chunks if c).strip() or None
+            renders.append((i, doc.load_page(i).get_pixmap(dpi=200).tobytes("png")))
+        return page_texts, renders, dropped
     except Exception:  # noqa: BLE001
         log.exception("could not extract PDF %s", path)
         return None
     finally:
         doc.close()
+
+
+async def extract_pdf(path) -> str | None:
+    """Text of a PDF: embedded text if present, else vision-transcribe pages."""
+    result = await asyncio.to_thread(_read_pdf_pages, path)
+    if result is None:
+        return None
+    page_texts, renders, dropped = result
+    # Vision-transcribe the scanned pages (async; off-thread render already done).
+    transcribed = {}
+    for i, png in renders:
+        text = await _vision_transcribe(png, "image/png")
+        if text:
+            transcribed[i] = text
+    # Reassemble in page order: embedded text where present, else its transcript.
+    chunks = []
+    for i, t in enumerate(page_texts):
+        if len(t) >= _MIN_PDF_TEXT:
+            chunks.append(t)
+        elif i in transcribed:
+            chunks.append(transcribed[i])
+    if dropped:
+        log.warning("scanned PDF: dropped %d page(s) beyond vision budget", dropped)
+    return "\n\n".join(c for c in chunks if c).strip() or None
 
 
 async def extract_image(path) -> str | None:

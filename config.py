@@ -25,7 +25,9 @@ for _d in (MEMORY_DIR, EXPERIENCES_DIR, PROJECTS_DIR, RESUMES_DIR, UPLOADS_DIR, 
 
 # --- Settings --------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+# OPENROUTER_API_KEY is read directly from the environment where needed
+# (classify.py, extract.py) rather than cached here, so a key set after import
+# still takes effect and tests can monkeypatch the env var.
 
 # --- opencode backend ------------------------------------------------------
 # Path to the OpenCode CLI. Auto-detected if on PATH.

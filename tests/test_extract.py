@@ -98,6 +98,16 @@ def test_vision_transcribe_none_on_malformed_body(monkeypatch):
     assert asyncio.run(extract._vision_transcribe(b"img", "image/png")) is None
 
 
+def test_vision_transcribe_joins_list_content(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    _install_client(monkeypatch, _FakeResp(200, {"choices": [{"message": {"content": [
+        {"type": "text", "text": "LINE ONE\n"},
+        {"type": "text", "text": "LINE TWO"},
+    ]}}]}))
+    out = asyncio.run(extract._vision_transcribe(b"img", "image/png"))
+    assert out == "LINE ONE\nLINE TWO"
+
+
 # ---- extract_pdf ---------------------------------------------------------
 def test_extract_pdf_returns_text_without_vision(monkeypatch):
     _install_fitz(monkeypatch, ["Jane Doe\nSenior Engineer at Acme"])
@@ -152,8 +162,52 @@ def test_extract_pdf_mixed_page_uses_vision_for_scanned_page(monkeypatch):
     assert "Real embedded text that is clearly long enough" in out
 
 
+def test_extract_pdf_runs_fitz_off_event_loop(monkeypatch):
+    import threading
+    import types
+    main_ident = threading.get_ident()
+    seen = {}
+
+    class _RecPage:
+        def get_text(self):
+            seen["ident"] = threading.get_ident()
+            return "Long enough embedded text for the fast path"
+
+        def get_pixmap(self, dpi=72):
+            return _FakePix()
+
+    class _RecDoc:
+        page_count = 1
+
+        def load_page(self, i):
+            return _RecPage()
+
+        def close(self):
+            pass
+
+    mod = types.ModuleType("fitz")
+    mod.open = lambda path: _RecDoc()
+    monkeypatch.setitem(sys.modules, "fitz", mod)
+
+    out = asyncio.run(extract.extract_pdf("x.pdf"))
+    assert "embedded text" in out
+    assert seen["ident"] != main_ident  # sync PyMuPDF ran off the event loop
+
+
 def test_extract_pdf_none_without_fitz(monkeypatch):
     monkeypatch.setitem(sys.modules, "fitz", None)  # import fitz -> ImportError
+    assert asyncio.run(extract.extract_pdf("x.pdf")) is None
+
+
+def test_extract_pdf_none_when_open_fails(monkeypatch):
+    import types
+
+    def _boom(path):
+        raise RuntimeError("corrupt file")
+
+    mod = types.ModuleType("fitz")
+    mod.open = _boom
+    monkeypatch.setitem(sys.modules, "fitz", mod)
     assert asyncio.run(extract.extract_pdf("x.pdf")) is None
 
 
@@ -177,3 +231,17 @@ def test_extract_image_transcribes_file(monkeypatch, tmp_path):
 
 def test_extract_image_none_on_unreadable(monkeypatch, tmp_path):
     assert asyncio.run(extract.extract_image(tmp_path / "missing.jpg")) is None
+
+
+def test_extract_image_unknown_ext_defaults_to_jpeg(monkeypatch, tmp_path):
+    p = tmp_path / "scan.bmp"
+    p.write_bytes(b"DATA")
+    seen = {}
+
+    async def _spy(data, mime):
+        seen["mime"] = mime
+        return "x"
+
+    monkeypatch.setattr(extract, "_vision_transcribe", _spy)
+    asyncio.run(extract.extract_image(p))
+    assert seen["mime"] == "image/jpeg"
