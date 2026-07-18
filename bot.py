@@ -16,6 +16,7 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
 
 import classify
 import config
+import extract
 import jobs_store
 import onboarding
 import render
@@ -24,9 +25,10 @@ import scan
 import telegram_format
 from agent import run_turn
 
-# Files OpenCode's read tool handles natively (no pre-extraction needed).
-NATIVE_READ_EXT = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
-                   ".txt", ".md", ".markdown", ".csv"}
+# Plain-text uploads OpenCode's read tool handles fine via --file.
+NATIVE_READ_EXT = {".txt", ".md", ".markdown", ".csv"}
+# Image uploads we transcribe server-side (extract.extract_image).
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 # Only these get sent back to the user as generated documents.
 SEND_BACK_EXT = {".md", ".pdf", ".docx", ".txt"}
@@ -691,12 +693,36 @@ async def on_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 "I couldn't read that .docx. Please export it to PDF and resend, "
                 "or paste the text.")
             return
-        # Text is inlined below, so no need to attach the binary .docx.
         prompt = (f"The user uploaded their existing resume/CV ('{dest.name}'). "
                   f"Here is its full extracted text:{note}\n\n----\n{extracted}\n----\n\n"
                   "Extract their REAL experiences, skills, and profile from it and "
                   "save them into memory following your rules. Never invent anything "
                   "not present in the document. Then briefly summarize what you saved.")
+    elif ext == ".pdf":
+        extracted = await extract.extract_pdf(dest)
+        if not extracted:
+            await update.message.reply_text(
+                "I couldn't read that PDF. If it's a scanned image, try a clearer "
+                "copy, export it to a text-based PDF, or paste the text.")
+            return
+        prompt = (f"The user uploaded their existing resume/CV ('{dest.name}'). "
+                  f"Here is its full extracted text:{note}\n\n----\n{extracted}\n----\n\n"
+                  "Extract their REAL experiences, skills, and profile from it and "
+                  "save them into memory following your rules. Never invent anything "
+                  "not present in the document. Then briefly summarize what you saved.")
+    elif ext in IMAGE_EXT:
+        extracted = await extract.extract_image(dest)
+        if not extracted:
+            await update.message.reply_text(
+                "I couldn't read that image. Try a clearer, well-lit copy, or "
+                "paste the text.")
+            return
+        prompt = (f"The user uploaded an image of a document ('{dest.name}'), "
+                  f"most likely their resume/CV.{note} Here is its transcribed "
+                  f"text:\n\n----\n{extracted}\n----\n\n"
+                  "Extract any REAL experiences, skills, or profile details and save "
+                  "them into memory following your rules. Never invent anything not "
+                  "present. Then briefly summarize what you saved and any gaps.")
     elif ext in NATIVE_READ_EXT:
         attach = [dest]
         prompt = (f"The user uploaded a document, saved at `uploads/{dest.name}` "
@@ -728,12 +754,19 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     note = f" The user added this note: {caption!r}." if caption else ""
-    prompt = (f"The user sent an image, saved at `uploads/{dest.name}` (likely a "
-              f"resume, certificate, or document photo).{note} Read the image, then "
-              "extract any REAL experiences, skills, or profile details and save them "
-              "into memory following your rules. Never invent anything not visible in "
-              "the image. Then briefly summarize what you saved.")
-    await _run_and_reply(update, ctx, prompt, files=[dest])
+    extracted = await extract.extract_image(dest)
+    if not extracted:
+        await update.message.reply_text(
+            "I couldn't read that photo. Try a clearer, well-lit shot, or paste "
+            "the text.")
+        return
+    prompt = (f"The user sent a photo of a document, saved as '{dest.name}' "
+              f"(likely a resume, certificate, or document).{note} Here is its "
+              f"transcribed text:\n\n----\n{extracted}\n----\n\n"
+              "Extract any REAL experiences, skills, or profile details and save them "
+              "into memory following your rules. Never invent anything not present. "
+              "Then briefly summarize what you saved.")
+    await _run_and_reply(update, ctx, prompt)
 
 
 def main() -> None:
