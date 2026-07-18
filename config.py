@@ -25,6 +25,7 @@ for _d in (MEMORY_DIR, EXPERIENCES_DIR, PROJECTS_DIR, RESUMES_DIR, UPLOADS_DIR, 
 
 # --- Settings --------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
 # --- opencode backend ------------------------------------------------------
 # Path to the OpenCode CLI. Auto-detected if on PATH.
@@ -45,6 +46,18 @@ SCAN_MODEL = os.getenv("SCAN_MODEL", "").strip()
 RESUME_MODEL = os.getenv("RESUME_MODEL", "").strip()
 CRITIQUE_MODEL = os.getenv("CRITIQUE_MODEL", "").strip()
 CLASSIFIER_MODEL = os.getenv("CLASSIFIER_MODEL", "").strip()
+
+# Model used to transcribe image / scanned-PDF uploads (a direct OpenRouter
+# vision call in extract.py, not an OpenCode turn). Falls back to OPENCODE_MODEL.
+VISION_MODEL = os.getenv("VISION_MODEL", "").strip()
+
+
+def vision_api_model() -> str:
+    """Vision model slug for direct OpenRouter calls (strip 'openrouter/')."""
+    m = VISION_MODEL or OPENCODE_MODEL
+    prefix = "openrouter/"
+    return m[len(prefix):] if m.startswith(prefix) else m
+
 
 _TASK_MODELS = {
     "scan": SCAN_MODEL,
