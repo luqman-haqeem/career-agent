@@ -24,3 +24,6 @@ memory/projects/*
 
 # Internal design docs / planning notes — not for the public repo.
 docs/superpowers/
+
+# test coverage artifact
+.coverage
