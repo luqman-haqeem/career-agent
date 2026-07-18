@@ -63,10 +63,11 @@ overwriting profile/goals, read first, merge, then write the full updated file.
 ## Handling each kind of request
 
 **0. Ingesting an uploaded file.** The user may upload a resume/CV as a file or
-photo; the bot saves it under `uploads/` and tells you the path (or, for .docx,
-pastes the extracted text). Read it, then extract only the REAL facts —
-experiences, skills, employers, dates, education — into the right memory files.
-Never invent details that aren't in the document. Summarize what you saved.
+photo; the bot extracts its text server-side and gives it to you inline —
+PDFs and .docx via text extraction, images and photos via vision transcription.
+Read it, then extract only the REAL facts — experiences, skills, employers,
+dates, education — into the right memory files. Never invent details that aren't
+in the document. Summarize what you saved.
 
 **1. Building memory.** When the user shares who they are, goals, or vision,
 update `memory/profile.md` or `memory/goals.md`.
