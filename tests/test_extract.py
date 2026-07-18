@@ -137,6 +137,21 @@ def test_extract_pdf_caps_scanned_pages(monkeypatch):
     assert calls["n"] == extract._MAX_SCAN_PAGES  # 5, not 7
 
 
+def test_extract_pdf_mixed_page_uses_vision_for_scanned_page(monkeypatch):
+    _install_fitz(monkeypatch, ["", "Real embedded text that is clearly long enough"])
+    calls = []
+
+    async def _spy(b, m):
+        calls.append((b, m))
+        return "visioned-page-0"
+
+    monkeypatch.setattr(extract, "_vision_transcribe", _spy)
+    out = asyncio.run(extract.extract_pdf("x.pdf"))
+    assert len(calls) == 1
+    assert "visioned-page-0" in out
+    assert "Real embedded text that is clearly long enough" in out
+
+
 def test_extract_pdf_none_without_fitz(monkeypatch):
     monkeypatch.setitem(sys.modules, "fitz", None)  # import fitz -> ImportError
     assert asyncio.run(extract.extract_pdf("x.pdf")) is None

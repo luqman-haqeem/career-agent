@@ -86,23 +86,32 @@ async def extract_pdf(path) -> str | None:
         log.exception("could not open PDF %s", path)
         return None
     try:
-        pages = [doc.load_page(i).get_text().strip() for i in range(doc.page_count)]
-        text = "\n\n".join(p for p in pages if p).strip()
-        if len(text) >= _MIN_PDF_TEXT:
-            return text
-        # Scanned PDF (no embedded text): render pages and transcribe.
-        n = min(doc.page_count, _MAX_SCAN_PAGES)
-        if doc.page_count > _MAX_SCAN_PAGES:
-            log.warning("scanned PDF has %d pages; transcribing first %d",
-                        doc.page_count, _MAX_SCAN_PAGES)
+        page_texts = [doc.load_page(i).get_text().strip()
+                      for i in range(doc.page_count)]
+        # Fast path: every page has real embedded text -> no vision, no cost.
+        if page_texts and all(len(t) >= _MIN_PDF_TEXT for t in page_texts):
+            return "\n\n".join(page_texts).strip() or None
+        # Mixed/scanned path: vision-transcribe only the pages that lack
+        # real embedded text, keeping embedded text where it exists.
+        budget = _MAX_SCAN_PAGES
+        dropped = 0
         chunks = []
-        for i in range(n):
-            png = doc.load_page(i).get_pixmap(dpi=200).tobytes("png")
-            t = await _vision_transcribe(png, "image/png")
-            if t:
+        for i, t in enumerate(page_texts):
+            if len(t) >= _MIN_PDF_TEXT:
                 chunks.append(t)
-        out = "\n\n".join(chunks).strip()
-        return out or None
+                continue
+            if budget <= 0:
+                dropped += 1
+                continue
+            budget -= 1
+            png = doc.load_page(i).get_pixmap(dpi=200).tobytes("png")
+            transcribed = await _vision_transcribe(png, "image/png")
+            if transcribed:
+                chunks.append(transcribed)
+        if dropped:
+            log.warning("scanned PDF: dropped %d page(s) beyond vision budget",
+                        dropped)
+        return "\n\n".join(c for c in chunks if c).strip() or None
     except Exception:  # noqa: BLE001
         log.exception("could not extract PDF %s", path)
         return None
