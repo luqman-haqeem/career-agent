@@ -267,6 +267,42 @@ def test_delivery_skips_a_file_owned_by_another_thread(monkeypatch):
     assert "globex.json" not in sent   # belongs to thread b
 
 
+# --- job marker (thread naming) --------------------------------------------
+def test_job_marker_becomes_a_position_company_label():
+    clean, label = bot.strip_job_marker(
+        "Moderate fit.\n\n[[JOB:Backend Developer|Avanade]]")
+    assert label == "Backend Developer — Avanade"
+    assert clean == "Moderate fit."
+
+
+def test_job_marker_without_a_company_still_names_the_position():
+    _clean, label = bot.strip_job_marker("ok [[JOB:Backend Developer|]]")
+    assert label == "Backend Developer"
+
+
+def test_job_marker_without_a_pipe_is_used_whole():
+    _clean, label = bot.strip_job_marker("ok [[JOB:Backend Developer]]")
+    assert label == "Backend Developer"
+
+
+def test_empty_job_marker_is_stripped_but_names_nothing():
+    clean, label = bot.strip_job_marker("ok [[JOB:]]")
+    assert label is None
+    assert "[[JOB" not in clean
+
+
+def test_missing_job_marker_leaves_text_alone():
+    clean, label = bot.strip_job_marker("just a chat message")
+    assert label is None
+    assert clean == "just a chat message"
+
+
+def test_a_named_thread_shows_position_company_in_its_header():
+    key = threads.new_thread(CHAT, "linkedin.com")
+    threads.set_label(CHAT, key, "Backend Developer — Avanade")
+    assert bot._thread_prefix(CHAT, key) == "🧵 **Backend Developer — Avanade**\n\n"
+
+
 # --- visible threading: label + reply quoting ------------------------------
 class _RecordingBot:
     """Captures send_message calls, including how each one was anchored."""
@@ -341,6 +377,33 @@ def test_every_sent_message_is_bound_to_its_thread():
     assert ids
     for mid in ids:
         assert threads.thread_for_message(CHAT, mid) == key
+
+
+def test_apply_names_its_thread_position_first(monkeypatch):
+    """Guards against swapping title/company when building the Apply label."""
+    async def fake_run_turn(prompt, session_id, model=None):
+        return "done", "ses-new"
+
+    async def noop(*a, **k):
+        return None
+
+    async def fake_send_message(chat_id, text, **kw):
+        return types.SimpleNamespace(message_id=77)
+
+    monkeypatch.setattr(bot, "run_turn", fake_run_turn)
+    monkeypatch.setattr(bot, "_keep_typing", noop)
+    monkeypatch.setattr(bot, "_send_chat", noop)
+    monkeypatch.setattr(bot, "_deliver_changed_resumes", noop)
+    monkeypatch.setattr(bot.jobs_store, "set_decision", lambda *a, **k: None)
+    monkeypatch.setattr(config, "model_for", lambda task: None)
+
+    ctx = types.SimpleNamespace(bot=types.SimpleNamespace(send_message=fake_send_message))
+    job = {"title": "Backend Developer", "company": "Avanade",
+           "location": "KL", "url": "https://x.io/1"}
+    asyncio.run(bot._generate_resume_for(ctx, CHAT, job, "jid123"))
+
+    labels = [meta["label"] for _k, meta in threads.listing(CHAT)]
+    assert labels == ["Backend Developer — Avanade"]
 
 
 # --- critique routing ------------------------------------------------------

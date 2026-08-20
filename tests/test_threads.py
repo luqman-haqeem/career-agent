@@ -92,12 +92,54 @@ def test_find_url_picks_the_first_link():
     assert threads.find_url(None) is None
 
 
-def test_set_resume_records_ownership_and_renames_the_thread(tmp_path, monkeypatch):
+def test_format_label_puts_the_position_first():
+    assert threads.format_label("Backend Developer", "Avanade") == \
+        "Backend Developer — Avanade"
+
+
+def test_format_label_drops_a_missing_side():
+    assert threads.format_label("Backend Developer", "") == "Backend Developer"
+    assert threads.format_label("", "Avanade") == "Avanade"
+    assert threads.format_label("", "") == ""
+
+
+def test_format_label_is_capped():
+    label = threads.format_label("Senior " * 20, "Some Very Long Company Sdn Bhd")
+    assert len(label) <= threads._MAX_LABEL
+
+
+def test_set_label_names_a_provisional_thread(tmp_path, monkeypatch):
+    t = _isolate(tmp_path, monkeypatch)
+    key = t.new_thread(CHAT, "jobstreet.com")
+    assert t.get(CHAT, key)["named"] is False
+    t.set_label(CHAT, key, "Backend Developer — Avanade")
+    assert t.get(CHAT, key)["label"] == "Backend Developer — Avanade"
+    assert t.get(CHAT, key)["named"] is True
+
+
+def test_set_label_ignores_an_empty_name(tmp_path, monkeypatch):
+    t = _isolate(tmp_path, monkeypatch)
+    key = t.new_thread(CHAT, "jobstreet.com")
+    t.set_label(CHAT, key, "   ")
+    assert t.get(CHAT, key)["label"] == "jobstreet.com"
+
+
+def test_set_resume_records_ownership_and_renames_a_provisional_thread(tmp_path, monkeypatch):
+    """A resume slug beats a bare hostname as a name."""
     t = _isolate(tmp_path, monkeypatch)
     key = t.new_thread(CHAT, "jobstreet.com")
     t.set_resume(CHAT, key, "avanade-backend.json")
     assert t.get(CHAT, key)["resume"] == "avanade-backend.json"
     assert t.get(CHAT, key)["label"] == "avanade-backend"   # host label upgraded
+
+
+def test_set_resume_never_overwrites_a_real_name(tmp_path, monkeypatch):
+    """'Backend Developer — Avanade' must not degrade to a filename slug."""
+    t = _isolate(tmp_path, monkeypatch)
+    key = t.new_thread(CHAT, "Backend Developer — Avanade", named=True)
+    t.set_resume(CHAT, key, "avanade-backend.json")
+    assert t.get(CHAT, key)["label"] == "Backend Developer — Avanade"
+    assert t.get(CHAT, key)["resume"] == "avanade-backend.json"
 
 
 def test_resume_owner_identifies_the_thread_that_owns_a_file(tmp_path, monkeypatch):

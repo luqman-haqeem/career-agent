@@ -411,6 +411,9 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     if completed and onboarding.status() == "in_progress":
         onboarding.set_status("done")
     text, claimed = strip_resume_marker(text)
+    text, job_label = strip_job_marker(text)
+    if job_label and thread != threads.MAIN:
+        threads.set_label(chat_id, thread, job_label)
     # Quote the message being answered, so the job an answer belongs to is
     # visible in a chat that has no real threads.
     anchor = update.message.message_id if update.message else None
@@ -433,6 +436,34 @@ async def _send_doc_chat(bot, chat_id: int, path: Path, reply_markup=None,
 
 async def _send_doc(update: Update, path: Path) -> None:
     await _send_doc_chat(update.get_bot(), update.effective_chat.id, path)
+
+
+JOB_MARKER_RE = re.compile(r"\[\[JOB:\s*([^\]]*?)\s*\]\]")
+
+# Appended to any prompt that may identify a job. A link gives us only the
+# hostname, so without this a thread stays labelled "linkedin.com" — useless
+# once two of them are open.
+JOB_MARKER_INSTRUCTION = (
+    "If this message is about a specific job opening, identify it on the last "
+    "line of your reply with this marker, using the job's real title and "
+    "employer from the posting (never guess one): [[JOB:position|company]]")
+
+
+def strip_job_marker(text: str):
+    """Pull the agent's `[[JOB:position|company]]` claim out of a reply.
+
+    Returns (clean_text, label or None). The pipe is an explicit separator
+    rather than a dash the model would render inconsistently (-, --, —).
+    """
+    m = JOB_MARKER_RE.search(text or "")
+    if not m:
+        return (text or "").strip(), None
+    raw = m.group(1).strip()
+    clean = JOB_MARKER_RE.sub("", text).strip()
+    if not raw:
+        return clean, None
+    position, _, company = raw.partition("|")
+    return clean, (threads.format_label(position, company) or None)
 
 
 RESUME_MARKER_RE = re.compile(r"\[\[RESUME:\s*([^\]\s][^\]]*?)\s*\]\]")
@@ -664,8 +695,9 @@ async def _on_job_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: s
 async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job: dict, jid: str) -> None:
     # Its own thread: tapping Apply on three scan results gives three separate
     # conversations, so "make it shorter" is never ambiguous.
-    label = " — ".join(x for x in (job.get("company"), job.get("title")) if x)
-    thread = threads.new_thread(chat_id, label or f"job {jid[:8]}")
+    label = threads.format_label(job.get("title"), job.get("company"))
+    thread = threads.new_thread(chat_id, label or f"job {jid[:8]}",
+                                named=bool(label))
     prompt = (
         "The user chose to apply to this job from a discovery scan. Build a tailored "
         "resume for it, following ALL your resume rules (never fabricate).\n\n"
@@ -706,6 +738,7 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
 
     jobs_store.set_decision(jid, "applied")
     text, claimed = strip_resume_marker(text)
+    text, _job_label = strip_job_marker(text)   # already named from the job card
     await _send_chat(ctx.bot, chat_id, text, thread,
                      reply_to=_message_id(sent))   # quote the "Tailoring…" notice
     await _deliver_changed_resumes(ctx.bot, chat_id, before, thread, claimed,
@@ -928,7 +961,10 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     thread, opened = _route_thread(update)
     if opened:
         await _announce_thread(ctx.bot, chat_id, thread)
-    await _run_and_reply(update, ctx, update.message.text, thread=thread)
+    prompt = update.message.text
+    if thread != threads.MAIN:
+        prompt += "\n\n" + JOB_MARKER_INSTRUCTION
+    await _run_and_reply(update, ctx, prompt, thread=thread)
 
 
 async def on_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

@@ -75,17 +75,45 @@ def label_for_url(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def new_thread(chat_id: int, label: str) -> str:
-    """Create a thread and return its key."""
+# Long enough for "Senior Full Stack Engineer — Some Company Sdn Bhd", short
+# enough to stay a one-line header on a phone.
+_MAX_LABEL = 60
+
+
+def format_label(position: str, company: str) -> str:
+    """Render a thread label as 'Position — Company', dropping either if absent."""
+    parts = [p.strip() for p in (position, company) if p and p.strip()]
+    return " — ".join(parts)[:_MAX_LABEL]
+
+
+def new_thread(chat_id: int, label: str, named: bool = False) -> str:
+    """Create a thread and return its key.
+
+    `named` marks a label as real (a position and company we actually know)
+    rather than provisional. A provisional label — the hostname we fall back to
+    when a link arrives before anyone has read the JD — gets replaced as soon as
+    something better turns up; a real one is never silently overwritten.
+    """
     data = _load(chat_id)
     key = f"t{secrets.token_urlsafe(4)}"
     while key in data["threads"]:  # collision is vanishingly rare, but cheap to rule out
         key = f"t{secrets.token_urlsafe(4)}"
     now = _now_iso()
-    data["threads"][key] = {"label": label, "created_at": now, "last_at": now,
-                            "resume": None}
+    data["threads"][key] = {"label": label[:_MAX_LABEL], "named": bool(named),
+                            "created_at": now, "last_at": now, "resume": None}
     _save(chat_id, data)
     return key
+
+
+def set_label(chat_id: int, key: str, label: str) -> None:
+    """Give a thread its real 'Position — Company' name."""
+    data = _load(chat_id)
+    t = data["threads"].get(key)
+    if not t or not (label or "").strip():
+        return
+    t["label"] = label.strip()[:_MAX_LABEL]
+    t["named"] = True
+    _save(chat_id, data)
 
 
 def get(chat_id: int, key: str):
@@ -127,11 +155,12 @@ def touch(chat_id: int, key: str) -> None:
 
 
 def set_resume(chat_id: int, key: str, filename: str) -> None:
-    """Record the resume a thread owns, and name the thread after it.
+    """Record the resume a thread owns.
 
-    The label starts as a bare hostname because the company is unknown when a
-    link arrives; the resume slug is the first point at which we have a name
-    worth showing.
+    A still-provisional thread (labelled with the bare hostname a link came
+    from) borrows the resume slug as a name, since that beats "linkedin.com".
+    A thread already carrying a real Position — Company keeps it: the slug is
+    a filename, not a title.
     """
     data = _load(chat_id)
     t = data["threads"].get(key)
@@ -139,8 +168,8 @@ def set_resume(chat_id: int, key: str, filename: str) -> None:
         return
     t["resume"] = filename
     stem = filename.rsplit(".", 1)[0]
-    if stem:
-        t["label"] = stem
+    if stem and not t.get("named"):
+        t["label"] = stem[:_MAX_LABEL]
     _save(chat_id, data)
 
 
