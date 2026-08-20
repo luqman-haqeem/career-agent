@@ -157,3 +157,40 @@ def test_coerce_skip_reasons_caps_at_four():
         '[{"title":"SRE","company":"Acme","url":"https://x.io/1",'
         '"skip_reasons":["a","b","c","d","e","f"]}]')
     assert out[0]["skip_reasons"] == ["a", "b", "c", "d"]
+
+
+def test_prompt_defers_targeting_to_goals_file():
+    """The scan must take its target roles from goals.md, not from a track
+    hardcoded in the prompt (regression: every scan returned DevOps roles)."""
+    prompt = scan.build_prompt([])
+    assert "goals.md" in prompt
+    assert "priority order" in prompt
+    assert "DevOps" not in prompt
+    assert "SRE" not in prompt
+
+
+def test_prompt_drops_roles_gated_on_absent_experience():
+    """Postings whose core requirement is experience the user does not have at
+    all must be hard-dropped, not surfaced with a low score."""
+    prompt = scan.build_prompt([])
+    assert "HARD-DROP" in prompt
+    assert "memory does not show" in prompt
+
+
+def test_prompt_caps_search_and_fetch_work(monkeypatch):
+    """The scan must bound its own fan-out: capped searches, capped candidate
+    fetches, and an early exit once enough keepers are found (regression: a
+    scan that used to finish in minutes ran past 30 min and was killed)."""
+    monkeypatch.setattr(config, "MAX_MATCHES_PER_SCAN", 5)
+    importlib.reload(scan)
+    prompt = scan.build_prompt([])
+    assert "at most 6" in prompt          # search cap
+    assert "at most 12" in prompt         # candidate fetch cap
+    assert "STOP" in prompt               # early exit once quota met
+    assert "5 keepers" in prompt          # quota comes from config, not hardcoded
+
+
+def test_prompt_quota_tracks_config(monkeypatch):
+    monkeypatch.setattr(config, "MAX_MATCHES_PER_SCAN", 3)
+    importlib.reload(scan)
+    assert "3 keepers" in scan.build_prompt([])

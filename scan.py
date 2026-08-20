@@ -25,8 +25,15 @@ Do this:
       current listings for relevant roles:
 {sources}
    b. ALSO use WebSearch for the user's target roles + preferred locations from
-      goals.md. Run a few focused searches.
-3. For EACH promising candidate, WebFetch the posting URL and check it:
+      goals.md, working DOWN the priority order that file gives. Run at most 6
+      searches TOTAL: at least 4 on the top-priority targets, no more than 2 on
+      lower/stretch tiers. Do not search every role variant — pick the queries
+      that cover the most ground.
+3. Shortlist the most promising candidates, then WebFetch at most 12 posting URLs
+   TOTAL across the whole scan — fetching is the slow, expensive step, so spend it
+   on the best-looking, highest-priority candidates and skip the rest unfetched.
+   Judge from title/company/location which are worth the fetch. For each one you
+   do fetch, check it:
    - LIVE (hard gate): it must be a CURRENTLY OPEN posting. DROP anything expired,
      closed, filled, dated in the past, or marked "no longer accepting applications"
      / removed. If you cannot fetch the page to confirm it is open, DROP it.
@@ -39,19 +46,25 @@ Do this:
      / Ampang / Klang Valley) OR fully remote. DROP roles clearly elsewhere and not
      remote.
    - REQUIREMENTS & ARRANGEMENT (score honestly — do NOT hide gaps, do NOT inflate):
-     read the stated requirements and compare to the user's REAL background — pivoting
-     INTO DevOps/SRE from a strong backend/software base (~5y software, but NOT years
-     of dedicated DevOps/SRE/Kubernetes/Terraform production). For a role the user
-     only PARTIALLY meets (e.g. "Senior" or "N years" where they have transferable
-     backbone but not the exact dedicated years, or an onsite role in a good
-     location), KEEP it but give a LOWER fit_score and NAME the gap/tradeoff in
-     why_fit (e.g. "wants 4y SRE — you have backend depth, not dedicated SRE years",
-     or "onsite in KL, you prefer hybrid"). HARD-DROP only true mismatches: the wrong
-     domain, or roles needing core skills the user has essentially none of. Never
-     inflate a partial fit to a high score, and never assume experience not in memory.
+     read the stated requirements and compare them to the user's REAL background as
+     written in memory/profile.md — the roles, skills and years actually recorded
+     there, nothing assumed or extrapolated forward. For a role the user only
+     PARTIALLY meets (e.g. "Senior" or "N years" where they have a transferable
+     backbone but not the exact years, or an onsite role in a good location), KEEP
+     it but give a LOWER fit_score and NAME the gap/tradeoff in why_fit (e.g. "wants
+     5y in this stack — you have 5y adjacent", or "onsite in KL, you prefer hybrid").
+     HARD-DROP a posting whose core stated requirement is experience the user's
+     memory does not show at all — a job title they have never held, or a production
+     toolchain they have never run — as well as wrong-domain roles. A stretch is
+     worth surfacing; a role the user cannot honestly apply to is noise. Never
+     inflate a partial fit to a high score, and never assume experience not in
+     memory.
 4. KEEP every opening that is live, in-area (or remote), and on-target for the user's
    goals — score each honestly (clean strong fits high; partial/stretch fits lower
    with the gap named in why_fit). Only drop the truly irrelevant.
+   STOP as soon as you have {max_matches} keepers, or once you hit either cap above
+   — whichever comes first. Only {max_matches} are ever shown to the user, so
+   researching more than that is wasted work. Return what you have and finish.
 5. Do NOT resurface anything the user was already shown. Already shown:
 {seen}
 
@@ -77,7 +90,9 @@ def build_prompt(seen_labels: list) -> str:
     seen = "\n".join(f"- {s}" for s in seen_labels) if seen_labels else "  (none yet)"
     sources = ("\n".join(f"      - {u}" for u in config.SCAN_SOURCES)
                if config.SCAN_SOURCES else "      (none configured)")
-    return SCAN_PROMPT.format(seen=seen, sources=sources)
+    # Read the cap at call time so tests/config changes take effect without reload.
+    return SCAN_PROMPT.format(seen=seen, sources=sources,
+                              max_matches=config.MAX_MATCHES_PER_SCAN)
 
 
 def _extract_array(text: str):
