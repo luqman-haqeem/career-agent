@@ -9,8 +9,12 @@ Contract:
 import asyncio
 import json
 import os
+import signal
 
 import config
+
+# Grace period between TERM and KILL when reaping a timed-out run.
+_KILL_GRACE = 5
 
 # --- opencode backend ------------------------------------------------------
 def _opencode_build_args(user_message: str, session_id: str | None, files, model=None) -> list:
@@ -30,6 +34,30 @@ def _opencode_build_args(user_message: str, session_id: str | None, files, model
     return args
 
 
+async def _kill_run(proc) -> None:
+    """TERM then KILL the run's whole process group, and reap it.
+
+    opencode spawns helper processes, so signalling only the parent would leave
+    them orphaned and still holding memory.
+    """
+    def _send(sig):
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except (ProcessLookupError, PermissionError):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        _send(sig)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=_KILL_GRACE)
+            return
+        except asyncio.TimeoutError:
+            continue
+
+
 async def _opencode_invoke(user_message: str, session_id: str | None, files, model=None):
     proc = await asyncio.create_subprocess_exec(
         *_opencode_build_args(user_message, session_id, files, model),
@@ -37,8 +65,17 @@ async def _opencode_invoke(user_message: str, session_id: str | None, files, mod
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=dict(os.environ),  # OpenCode uses its own configured provider auth.
+        start_new_session=True,  # own process group, so a timeout can kill helpers too
     )
-    out, err = await proc.communicate()
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=config.OPENCODE_TIMEOUT)
+    except asyncio.TimeoutError:
+        await _kill_run(proc)
+        raise RuntimeError(f"opencode exceeded {config.OPENCODE_TIMEOUT}s and was killed") from None
+    except asyncio.CancelledError:
+        # Bot shutting down / turn abandoned: don't leave the run behind.
+        await _kill_run(proc)
+        raise
     return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
 
 
@@ -93,7 +130,19 @@ async def _opencode_run_turn(user_message: str, session_id: str | None = None, f
         raise RuntimeError(err.strip() or out.strip() or f"opencode exited with code {rc}")
 
     reply, new_session = _opencode_parse(out, session_id)
-    return reply or "(no response)", new_session
+    if not reply:
+        # Exit 0 with no assistant text means opencode recorded the user
+        # message and gave up without answering — e.g. the provider rejected
+        # the request (an image part sent to a text-only model comes back as
+        # 404 "No endpoints found that support image input"). Returning a
+        # placeholder here hid that behind a normal-looking reply, and because
+        # the caller then saved the session id, the dead turn stayed in the
+        # history and every later turn failed the same way. Raise instead.
+        detail = err.strip() or out.strip()
+        raise RuntimeError(
+            "opencode exited 0 without an assistant reply"
+            + (f": {detail[:500]}" if detail else ""))
+    return reply, new_session
 
 
 # --- dispatcher ------------------------------------------------------------

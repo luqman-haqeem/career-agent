@@ -39,6 +39,13 @@ OPENCODE_BIN = os.getenv("OPENCODE_BIN") or shutil.which("opencode") or "opencod
 # leak chain-of-thought into replies.
 OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", "openrouter/google/gemini-2.5-flash-lite").strip()
 
+# Hard ceiling on a single OpenCode run, in seconds. Without one, a run that
+# wedges (stalled provider request) waits forever holding its memory — a scan
+# was found still running after 41 days. On timeout the process group is killed
+# and the turn raises; callers already degrade gracefully. 30 min is well clear
+# of a real discovery scan, which fetches many job pages.
+OPENCODE_TIMEOUT = int(os.getenv("OPENCODE_TIMEOUT", "1800"))
+
 # --- Per-task model overrides ----------------------------------------------
 # Each falls back to OPENCODE_MODEL when unset (so leaving them blank keeps
 # today's single-model behavior). SCAN_MODEL / RESUME_MODEL drive the dedicated
