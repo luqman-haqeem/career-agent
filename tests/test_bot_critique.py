@@ -66,7 +66,7 @@ def test_critique_keyboard_callback_data_format_and_length():
 def test_delivery_attaches_button_to_pdf_not_json(monkeypatch):
     sent = []  # (filename, reply_markup)
 
-    async def fake_send_doc(bot_, chat_id, path, reply_markup=None):
+    async def fake_send_doc(bot_, chat_id, path, reply_markup=None, **kw):
         sent.append((path.name, reply_markup))
 
     monkeypatch.setattr(bot, "_send_doc_chat", fake_send_doc)
@@ -91,7 +91,7 @@ def test_delivery_attaches_button_to_pdf_not_json(monkeypatch):
 def test_delivery_falls_back_to_json_button_when_pdf_render_fails(monkeypatch):
     sent = []
 
-    async def fake_send_doc(bot_, chat_id, path, reply_markup=None):
+    async def fake_send_doc(bot_, chat_id, path, reply_markup=None, **kw):
         sent.append((path.name, reply_markup))
 
     def boom(p):
@@ -128,7 +128,7 @@ def test_critique_tap_runs_on_critique_model(monkeypatch):
 
     sent_text = {}
 
-    async def fake_send_chat(bot_, chat_id, text, thread=None):
+    async def fake_send_chat(bot_, chat_id, text, thread=None, **kw):
         sent_text["text"] = text
         sent_text["thread"] = thread
 

@@ -235,7 +235,7 @@ def test_delivery_claims_ownership_for_the_running_thread(monkeypatch):
     (config.RESUMES_DIR / "acme.json").write_text("{}", encoding="utf-8")
     sent = []
 
-    async def fake_send_doc(bot_, chat_id, path, reply_markup=None):
+    async def fake_send_doc(bot_, chat_id, path, reply_markup=None, **kw):
         sent.append(path.name)
 
     monkeypatch.setattr(bot, "_send_doc_chat", fake_send_doc)
@@ -255,7 +255,7 @@ def test_delivery_skips_a_file_owned_by_another_thread(monkeypatch):
         (config.RESUMES_DIR / name).write_text("{}", encoding="utf-8")
     sent = []
 
-    async def fake_send_doc(bot_, chat_id, path, reply_markup=None):
+    async def fake_send_doc(bot_, chat_id, path, reply_markup=None, **kw):
         sent.append(path.name)
 
     monkeypatch.setattr(bot, "_send_doc_chat", fake_send_doc)
@@ -265,6 +265,82 @@ def test_delivery_skips_a_file_owned_by_another_thread(monkeypatch):
         object(), CHAT, before={}, thread=a, claimed="acme.json"))
     assert "acme.json" in sent
     assert "globex.json" not in sent   # belongs to thread b
+
+
+# --- visible threading: label + reply quoting ------------------------------
+class _RecordingBot:
+    """Captures send_message calls, including how each one was anchored."""
+
+    def __init__(self):
+        self.calls = []
+        self._next_id = 100
+
+    async def send_message(self, chat_id, text, parse_mode=None,
+                           reply_parameters=None, **kw):
+        self._next_id += 1
+        self.calls.append({"text": text, "reply_parameters": reply_parameters})
+        return types.SimpleNamespace(message_id=self._next_id)
+
+
+def test_thread_prefix_labels_a_job_thread():
+    key = threads.new_thread(CHAT, "boards.briohr.com")
+    assert bot._thread_prefix(CHAT, key) == "🧵 **boards.briohr.com**\n\n"
+
+
+def test_thread_prefix_is_empty_for_the_main_conversation():
+    assert bot._thread_prefix(CHAT, threads.MAIN) == ""
+    assert bot._thread_prefix(CHAT, None) == ""
+
+
+def test_thread_prefix_strips_markdown_from_the_label():
+    """A company name with '*' would otherwise eat the surrounding formatting."""
+    key = threads.new_thread(CHAT, "A*C_ME `Ltd`")
+    assert bot._thread_prefix(CHAT, key) == "🧵 **ACME Ltd**\n\n"
+
+
+def test_reply_params_are_tolerant_of_a_deleted_target():
+    p = bot._reply_params(77)
+    assert p.message_id == 77
+    assert p.allow_sending_without_reply is True
+    assert bot._reply_params(None) is None
+
+
+def test_sent_text_carries_the_thread_label():
+    key = threads.new_thread(CHAT, "acme.com")
+    fake = _RecordingBot()
+    asyncio.run(bot._send_chat(fake, CHAT, "Moderate fit.", thread=key))
+    assert "acme.com" in fake.calls[0]["text"]
+
+
+def test_main_conversation_gets_no_label():
+    fake = _RecordingBot()
+    asyncio.run(bot._send_chat(fake, CHAT, "Saved to memory.", thread=threads.MAIN))
+    assert "🧵" not in fake.calls[0]["text"]
+
+
+def test_the_reply_quotes_the_message_it_answers():
+    fake = _RecordingBot()
+    asyncio.run(bot._send_chat(fake, CHAT, "answer", reply_to=55))
+    assert fake.calls[0]["reply_parameters"].message_id == 55
+
+
+def test_only_the_first_chunk_quotes(monkeypatch):
+    """A long answer must not repeat the quote bar on every chunk."""
+    monkeypatch.setattr(bot.telegram_format, "chunk", lambda t: iter(["a", "b", "c"]))
+    fake = _RecordingBot()
+    asyncio.run(bot._send_chat(fake, CHAT, "long", reply_to=55))
+    assert fake.calls[0]["reply_parameters"] is not None
+    assert [c["reply_parameters"] for c in fake.calls[1:]] == [None, None]
+
+
+def test_every_sent_message_is_bound_to_its_thread():
+    """Replying to any part of a multi-chunk answer must route back."""
+    key = threads.new_thread(CHAT, "acme.com")
+    fake = _RecordingBot()
+    ids = asyncio.run(bot._send_chat(fake, CHAT, "answer", thread=key))
+    assert ids
+    for mid in ids:
+        assert threads.thread_for_message(CHAT, mid) == key
 
 
 # --- critique routing ------------------------------------------------------
@@ -293,7 +369,7 @@ def _run_critique(monkeypatch, name, seen):
     async def noop_typing(bot_, chat_id):
         return
 
-    async def fake_send_chat(bot_, chat_id, text, thread=None):
+    async def fake_send_chat(bot_, chat_id, text, thread=None, **kw):
         seen["thread"] = thread
 
     monkeypatch.setattr(bot, "run_turn", fake_run_turn)

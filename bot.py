@@ -10,7 +10,8 @@ import shutil
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
+                      ReplyParameters, Update)
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
@@ -168,20 +169,55 @@ def _message_id(sent):
     return getattr(sent, "message_id", None)
 
 
-async def _send_chat(bot, chat_id: int, text: str, thread: str = None) -> list:
+def _thread_prefix(chat_id: int, thread: str) -> str:
+    """A '🧵 label' header so an answer is visibly tied to its job.
+
+    A Telegram DM is one flat stream with no real threads, so the per-job
+    sessions are otherwise invisible: two jobs in flight read as one jumbled
+    conversation even though the model keeps them apart. Markdown-active
+    characters are stripped from the label — it goes through the Markdown ->
+    HTML converter, and a company name containing '*' would eat the formatting.
+    """
+    if not thread or thread == threads.MAIN:
+        return ""
+    meta = threads.get(chat_id, thread) or {}
+    label = re.sub(r"[*_`\[\]]", "", meta.get("label") or thread).strip()
+    return f"🧵 **{label}**\n\n" if label else ""
+
+
+def _reply_params(reply_to):
+    """Quote the message being answered, degrading if it has been deleted.
+
+    allow_sending_without_reply keeps a deleted target from turning the whole
+    reply into a BadRequest.
+    """
+    if not reply_to:
+        return None
+    return ReplyParameters(message_id=reply_to, allow_sending_without_reply=True)
+
+
+async def _send_chat(bot, chat_id: int, text: str, thread: str = None,
+                     reply_to: int = None) -> list:
     """Send text as Telegram HTML (plain-text fallback); return sent message ids.
 
-    When `thread` is given, each sent message is bound to it so a reply to any
-    of them routes the next turn back into the same conversation.
+    When `thread` is given the reply carries its label and each sent message is
+    bound to it, so a reply to any of them routes the next turn back into the
+    same conversation. `reply_to` quotes the message being answered — only on
+    the first chunk, so a long answer isn't a wall of repeated quote bars.
     """
+    text = _thread_prefix(chat_id, thread) + (text or "")
     ids = []
+    params = _reply_params(reply_to)
     for piece in telegram_format.chunk(text):
+        kw = {"reply_parameters": params} if params else {}
         try:
             sent = await bot.send_message(
-                chat_id, telegram_format.to_telegram_html(piece), parse_mode="HTML")
+                chat_id, telegram_format.to_telegram_html(piece),
+                parse_mode="HTML", **kw)
         except Exception as e:  # noqa: BLE001 - bad markup etc.: degrade gracefully
             log.warning("HTML send failed (%s); falling back to plain text", e)
-            sent = await bot.send_message(chat_id, telegram_format.to_plain(piece))
+            sent = await bot.send_message(chat_id, telegram_format.to_plain(piece), **kw)
+        params = None  # subsequent chunks follow on naturally
         mid = _message_id(sent)
         if mid:
             ids.append(mid)
@@ -191,8 +227,10 @@ async def _send_chat(bot, chat_id: int, text: str, thread: str = None) -> list:
     return ids
 
 
-async def _send(update: Update, text: str, thread: str = None) -> list:
-    return await _send_chat(update.get_bot(), update.effective_chat.id, text, thread)
+async def _send(update: Update, text: str, thread: str = None,
+                reply_to: int = None) -> list:
+    return await _send_chat(update.get_bot(), update.effective_chat.id, text,
+                            thread, reply_to)
 
 
 def _resume_snapshot() -> dict:
@@ -373,15 +411,22 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     if completed and onboarding.status() == "in_progress":
         onboarding.set_status("done")
     text, claimed = strip_resume_marker(text)
-    await _send(update, text, thread)
-    await _deliver_new_files(update, before, thread, claimed)
+    # Quote the message being answered, so the job an answer belongs to is
+    # visible in a chat that has no real threads.
+    anchor = update.message.message_id if update.message else None
+    await _send(update, text, thread, reply_to=anchor)
+    await _deliver_new_files(update, before, thread, claimed, reply_to=anchor)
 
 
-async def _send_doc_chat(bot, chat_id: int, path: Path, reply_markup=None) -> None:
+async def _send_doc_chat(bot, chat_id: int, path: Path, reply_markup=None,
+                         reply_to: int = None) -> None:
     try:
+        params = _reply_params(reply_to)
+        kw = {"reply_parameters": params} if params else {}
         with open(path, "rb") as fh:
             await bot.send_document(
-                chat_id, document=fh, filename=path.name, reply_markup=reply_markup)
+                chat_id, document=fh, filename=path.name,
+                reply_markup=reply_markup, **kw)
     except Exception as e:  # noqa: BLE001
         log.warning("could not send %s: %s", path, e)
 
@@ -432,7 +477,8 @@ def _deliverable_here(chat_id: int, name: str, thread: str, claimed: str) -> boo
 
 
 async def _deliver_changed_resumes(bot, chat_id: int, before: dict,
-                                   thread: str = None, claimed: str = None) -> None:
+                                   thread: str = None, claimed: str = None,
+                                   reply_to: int = None) -> None:
     """Render any new/updated resume JSON to PDF and send it; send other docs.
 
     Compares mtimes so an *updated* resume (same filename) is re-rendered and
@@ -463,7 +509,8 @@ async def _deliver_changed_resumes(bot, chat_id: int, before: dict,
             button_sent = False
             try:
                 pdf = await asyncio.to_thread(render.render_json_to_pdf, path)
-                await _send_doc_chat(bot, chat_id, pdf, reply_markup=kb)
+                await _send_doc_chat(bot, chat_id, pdf, reply_markup=kb,
+                                     reply_to=reply_to)
                 # _send_doc_chat swallows its own send errors, so button_sent means
                 # "render succeeded and the send call didn't raise" — not a delivery guarantee.
                 button_sent = True
@@ -476,15 +523,17 @@ async def _deliver_changed_resumes(bot, chat_id: int, before: dict,
             # JSON Resume file (portable). If the PDF didn't go out, the button
             # rides on the JSON so the one-tap critique is never lost.
             await _send_doc_chat(
-                bot, chat_id, path, reply_markup=None if button_sent else kb)
+                bot, chat_id, path, reply_markup=None if button_sent else kb,
+                reply_to=reply_to)
         elif ext in SEND_BACK_EXT:
-            await _send_doc_chat(bot, chat_id, path)
+            await _send_doc_chat(bot, chat_id, path, reply_to=reply_to)
 
 
-async def _deliver_new_files(update: Update, before: dict,
-                             thread: str = None, claimed: str = None) -> None:
+async def _deliver_new_files(update: Update, before: dict, thread: str = None,
+                             claimed: str = None, reply_to: int = None) -> None:
     await _deliver_changed_resumes(
-        update.get_bot(), update.effective_chat.id, before, thread, claimed)
+        update.get_bot(), update.effective_chat.id, before, thread, claimed,
+        reply_to)
 
 
 # --- Job discovery ---------------------------------------------------------
@@ -657,8 +706,10 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
 
     jobs_store.set_decision(jid, "applied")
     text, claimed = strip_resume_marker(text)
-    await _send_chat(ctx.bot, chat_id, text, thread)
-    await _deliver_changed_resumes(ctx.bot, chat_id, before, thread, claimed)
+    await _send_chat(ctx.bot, chat_id, text, thread,
+                     reply_to=_message_id(sent))   # quote the "Tailoring…" notice
+    await _deliver_changed_resumes(ctx.bot, chat_id, before, thread, claimed,
+                                   reply_to=_message_id(sent))
 
 
 async def _on_critique_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
@@ -706,7 +757,9 @@ async def _on_critique_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         return
     finally:
         typing.cancel()
-    await _send_chat(ctx.bot, chat_id, text, thread)
+    # Quote the resume the button was attached to, so the score sits with it.
+    await _send_chat(ctx.bot, chat_id, text, thread,
+                     reply_to=_message_id(getattr(query, "message", None)))
 
 
 async def _do_scan(bot, chat_id: int, manual: bool) -> None:
