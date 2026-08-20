@@ -48,9 +48,10 @@ def _photo():
 def _capture_run_and_reply(monkeypatch):
     seen = {}
 
-    async def fake_rr(update, ctx, prompt, files=None):
+    async def fake_rr(update, ctx, prompt, files=None, thread=None):
         seen["prompt"] = prompt
         seen["files"] = files
+        seen["thread"] = thread
 
     monkeypatch.setattr(bot, "_run_and_reply", fake_rr)
     return seen

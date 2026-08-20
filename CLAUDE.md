@@ -143,6 +143,18 @@ After writing, briefly tell the user what you emphasized, any gaps, and that the
 PDF is attached. Then offer in one line: "Want me to score this against the JD
 before you send it? Say 'critique it'."
 
+ALWAYS end a reply in which you saved a resume with this marker on its own last
+line, naming the exact file you wrote (filename only, no path):
+
+```
+[[RESUME:avanade-backend.json]]
+```
+
+The bot strips the marker before the user sees it and uses it to send that exact
+PDF. The user may have several job threads open at once, so without the marker
+the bot has to guess which file your turn produced — and can attach the wrong
+resume. One marker per saved resume; never emit it for a file you did not write.
+
 When the user asks to REVISE or update a resume, actually re-write the `.json`
 file (reuse the same filename) — don't just describe the change in chat. Writing
 the file is what triggers the bot to regenerate and resend the PDF.

@@ -23,6 +23,7 @@ import render
 import preferences
 import scan
 import telegram_format
+import threads
 from agent import run_turn
 
 # Plain-text uploads OpenCode's read tool handles fine via --file.
@@ -48,13 +49,17 @@ _STATIC_INTRO = (
     "Commands: /help  /reset  /onboard")
 
 
-# --- Per-chat session id (OpenCode conversation continuity) ----------------
-def _session_path(chat_id: int) -> Path:
-    return config.SESSIONS_DIR / f"{chat_id}.json"
+# --- Per-thread session id (OpenCode conversation continuity) --------------
+def _session_path(chat_id: int, thread: str = threads.MAIN) -> Path:
+    # The main thread keeps the pre-thread filename so an existing install's
+    # conversation survives this upgrade without a migration step.
+    if thread == threads.MAIN:
+        return config.SESSIONS_DIR / f"{chat_id}.json"
+    return config.SESSIONS_DIR / f"{chat_id}.{thread}.json"
 
 
-def load_session_id(chat_id: int):
-    p = _session_path(chat_id)
+def load_session_id(chat_id: int, thread: str = threads.MAIN):
+    p = _session_path(chat_id, thread)
     if p.exists():
         try:
             return json.loads(p.read_text(encoding="utf-8")).get("session_id")
@@ -63,10 +68,21 @@ def load_session_id(chat_id: int):
     return None
 
 
-def save_session_id(chat_id: int, session_id) -> None:
+def save_session_id(chat_id: int, session_id, thread: str = threads.MAIN) -> None:
     if session_id:
-        _session_path(chat_id).write_text(
+        _session_path(chat_id, thread).write_text(
             json.dumps({"session_id": session_id}), encoding="utf-8")
+
+
+# One lock per (chat, thread). A turn is load-session -> long await -> save,
+# so two concurrent turns on the SAME session interleave and the second write
+# wins, silently dropping the first turn's history. Different threads hold
+# different locks and stay independent, which is the whole point of threading.
+_thread_locks: dict = {}
+
+
+def _lock_for(chat_id: int, thread: str) -> asyncio.Lock:
+    return _thread_locks.setdefault((chat_id, thread), asyncio.Lock())
 
 
 def _context_stats(chat_id: int) -> dict:
@@ -118,10 +134,22 @@ def _critique_keyboard(token: str) -> InlineKeyboardMarkup:
         [[InlineKeyboardButton("📝 Critique it", callback_data=f"crit:{token}")]])
 
 
-def _clear_session(chat_id: int) -> None:
-    p = _session_path(chat_id)
+def _clear_session(chat_id: int, thread: str = threads.MAIN) -> None:
+    p = _session_path(chat_id, thread)
     if p.exists():
         p.unlink()
+
+
+def _clear_all_sessions(chat_id: int) -> None:
+    """Reset every thread for this chat, not just the main one.
+
+    /reset means "start fresh"; leaving job threads pinned to old sessions
+    would keep serving the very history the user asked to be rid of.
+    """
+    for key, _meta in threads.listing(chat_id):
+        _clear_session(chat_id, key)
+    _clear_session(chat_id, threads.MAIN)
+    threads.forget_all(chat_id)
 
 
 def _allowed(update: Update) -> bool:
@@ -131,19 +159,40 @@ def _allowed(update: Update) -> bool:
                 and update.effective_user.id in config.ALLOWED_USER_IDS)
 
 
-async def _send_chat(bot, chat_id: int, text: str) -> None:
-    """Send text rendered as Telegram HTML, with a plain-text fallback."""
+def _message_id(sent):
+    """Message id of a python-telegram-bot send result, or None.
+
+    Test doubles return plain objects (or nothing), so this never assumes the
+    real Message type.
+    """
+    return getattr(sent, "message_id", None)
+
+
+async def _send_chat(bot, chat_id: int, text: str, thread: str = None) -> list:
+    """Send text as Telegram HTML (plain-text fallback); return sent message ids.
+
+    When `thread` is given, each sent message is bound to it so a reply to any
+    of them routes the next turn back into the same conversation.
+    """
+    ids = []
     for piece in telegram_format.chunk(text):
         try:
-            await bot.send_message(
+            sent = await bot.send_message(
                 chat_id, telegram_format.to_telegram_html(piece), parse_mode="HTML")
         except Exception as e:  # noqa: BLE001 - bad markup etc.: degrade gracefully
             log.warning("HTML send failed (%s); falling back to plain text", e)
-            await bot.send_message(chat_id, telegram_format.to_plain(piece))
+            sent = await bot.send_message(chat_id, telegram_format.to_plain(piece))
+        mid = _message_id(sent)
+        if mid:
+            ids.append(mid)
+    if thread and thread != threads.MAIN:
+        for mid in ids:
+            threads.bind_message(chat_id, mid, thread)
+    return ids
 
 
-async def _send(update: Update, text: str) -> None:
-    await _send_chat(update.get_bot(), update.effective_chat.id, text)
+async def _send(update: Update, text: str, thread: str = None) -> list:
+    return await _send_chat(update.get_bot(), update.effective_chat.id, text, thread)
 
 
 def _resume_snapshot() -> dict:
@@ -177,13 +226,17 @@ async def help_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "🧱 Add experience: describe something you did — I'll structure it (Situation/Task/Action/Result/Metrics) and save it.\n"
         "🎯 Check a job: paste a JD or a link. I'll rate the fit and name the gaps.\n"
         "📄 Tailored resume: ask for a resume for a JD — built only from what I actually know about you.\n\n"
+        "🧵 Send several job links at once — each opens its own thread, so they never "
+        "mix. Reply to a message to continue that job; /threads lists them.\n\n"
         "/status shows how big the current conversation is, with a one-tap Reset button.\n"
         "/reset starts a fresh conversation (your saved profile, goals, experiences and projects are kept).")
 
 
 async def reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    _clear_session(update.effective_chat.id)
-    await update.message.reply_text("🧹 Started a fresh conversation. Your long-term memory is untouched.")
+    _clear_all_sessions(update.effective_chat.id)
+    await update.message.reply_text(
+        "🧹 Started a fresh conversation and closed every job thread. "
+        "Your long-term memory is untouched.")
 
 
 async def onboard_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -215,7 +268,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await _on_critique_action(update, ctx, data)
         return
     if query.data == "reset_context":
-        _clear_session(update.effective_chat.id)
+        _clear_all_sessions(update.effective_chat.id)
         await query.answer("Conversation cleared ✅")
         try:
             await query.edit_message_text(
@@ -282,32 +335,46 @@ async def _model_for_message(text: str) -> str | None:
 
 
 async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
-                         prompt: str, files=None) -> None:
-    """Run one agent turn for this chat and send back text + any new resume.
+                         prompt: str, files=None, thread: str = None) -> None:
+    """Run one agent turn in `thread` and send back text + any new resume.
 
-    `files` are upload paths passed to OpenCode via --file.
+    `files` are upload paths passed to OpenCode via --file. `thread` defaults
+    to the main conversation; a job thread keeps its own OpenCode session so
+    two jobs in flight never share a history.
     """
     chat_id = update.effective_chat.id
-    session_id = load_session_id(chat_id)
-    before = _resume_snapshot()
+    thread = thread or threads.MAIN
     model = await _model_for_message(prompt)
 
-    typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
-    try:
-        text, session_id = await run_turn(prompt, session_id, files=files, model=model)
-    except Exception as e:  # noqa: BLE001
-        log.exception("turn failed")
-        await update.message.reply_text(f"⚠️ Something went wrong: {e}")
-        return
-    finally:
-        typing.cancel()
+    # Bind the user's own message too, so replying to it (not just to the
+    # bot's answer) also routes back into this thread.
+    if thread != threads.MAIN and update.message:
+        threads.bind_message(chat_id, update.message.message_id, thread)
 
-    save_session_id(chat_id, session_id)
+    async with _lock_for(chat_id, thread):
+        session_id = load_session_id(chat_id, thread)
+        before = _resume_snapshot()
+        typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
+        try:
+            text, session_id = await run_turn(prompt, session_id, files=files, model=model)
+        except Exception as e:  # noqa: BLE001
+            log.exception("turn failed")
+            sent = await update.message.reply_text(f"⚠️ Something went wrong: {e}")
+            if thread != threads.MAIN:
+                threads.bind_message(chat_id, _message_id(sent), thread)
+            return
+        finally:
+            typing.cancel()
+
+        save_session_id(chat_id, session_id, thread)
+        threads.touch(chat_id, thread)
+
     text, completed = onboarding.strip_complete_marker(text)
     if completed and onboarding.status() == "in_progress":
         onboarding.set_status("done")
-    await _send(update, text)
-    await _deliver_new_files(update, before)
+    text, claimed = strip_resume_marker(text)
+    await _send(update, text, thread)
+    await _deliver_new_files(update, before, thread, claimed)
 
 
 async def _send_doc_chat(bot, chat_id: int, path: Path, reply_markup=None) -> None:
@@ -323,16 +390,70 @@ async def _send_doc(update: Update, path: Path) -> None:
     await _send_doc_chat(update.get_bot(), update.effective_chat.id, path)
 
 
-async def _deliver_changed_resumes(bot, chat_id: int, before: dict) -> None:
+RESUME_MARKER_RE = re.compile(r"\[\[RESUME:\s*([^\]\s][^\]]*?)\s*\]\]")
+
+# Appended to any prompt that may produce a resume. The agent naming the file
+# is what lets delivery send exactly that one, instead of guessing from a
+# directory diff that cannot tell two concurrent jobs apart.
+RESUME_MARKER_INSTRUCTION = (
+    "When you have saved the resume JSON, end your reply with this marker on its "
+    "own last line, using the exact filename you wrote (no path): "
+    "[[RESUME:filename.json]]")
+
+
+def strip_resume_marker(text: str):
+    """Pull the agent's `[[RESUME:name.json]]` claim out of a reply.
+
+    Returns (clean_text, filename or None). Without this, delivery can only
+    guess which file a turn produced by diffing the whole resumes/ directory —
+    which silently cross-delivers as soon as two threads run at once. Mirrors
+    onboarding.strip_complete_marker.
+    """
+    m = RESUME_MARKER_RE.search(text or "")
+    if not m:
+        return (text or "").strip(), None
+    name = Path(m.group(1).strip()).name   # never let the agent escape resumes/
+    clean = RESUME_MARKER_RE.sub("", text).strip()
+    return clean, (name or None)
+
+
+def _deliverable_here(chat_id: int, name: str, thread: str, claimed: str) -> bool:
+    """True if `name` belongs in this thread's chat.
+
+    A file another thread already owns is never re-sent here — that is the
+    cross-delivery this whole mechanism exists to prevent. Unowned files still
+    go to whoever is running, so a turn that forgets the marker degrades to the
+    old behaviour instead of delivering nothing.
+    """
+    if claimed and name == claimed:
+        return True
+    owner = threads.resume_owner(chat_id, name)
+    return owner is None or owner == (thread or threads.MAIN)
+
+
+async def _deliver_changed_resumes(bot, chat_id: int, before: dict,
+                                   thread: str = None, claimed: str = None) -> None:
     """Render any new/updated resume JSON to PDF and send it; send other docs.
 
     Compares mtimes so an *updated* resume (same filename) is re-rendered and
-    re-sent. Skips scratch/helper files (e.g. _make_pdf.py).
+    re-sent. Skips scratch/helper files (e.g. _make_pdf.py). `claimed` is the
+    filename the agent named via [[RESUME:...]]; it is delivered even if its
+    mtime is unchanged, and it claims ownership for this thread.
     """
     after = _resume_snapshot()
     changed = sorted(name for name, mtime in after.items()
                      if not name.startswith((".", "_"))
                      and mtime != before.get(name))
+    # A rewrite landing inside the same mtime tick still needs delivering.
+    if claimed and claimed in after and claimed not in changed:
+        changed.append(claimed)
+    if claimed and threads.resume_owner(chat_id, claimed) is None:
+        threads.set_resume(chat_id, thread or threads.MAIN, claimed)
+    skipped = [n for n in changed if not _deliverable_here(chat_id, n, thread, claimed)]
+    if skipped:
+        log.info("thread %s: not re-sending %s (owned by another thread)",
+                 thread, ", ".join(skipped))
+    changed = [n for n in changed if _deliverable_here(chat_id, n, thread, claimed)]
     for name in changed:
         path = config.RESUMES_DIR / name
         ext = path.suffix.lower()
@@ -360,9 +481,10 @@ async def _deliver_changed_resumes(bot, chat_id: int, before: dict) -> None:
             await _send_doc_chat(bot, chat_id, path)
 
 
-async def _deliver_new_files(update: Update, before: dict) -> None:
+async def _deliver_new_files(update: Update, before: dict,
+                             thread: str = None, claimed: str = None) -> None:
     await _deliver_changed_resumes(
-        update.get_bot(), update.effective_chat.id, before)
+        update.get_bot(), update.effective_chat.id, before, thread, claimed)
 
 
 # --- Job discovery ---------------------------------------------------------
@@ -491,8 +613,10 @@ async def _on_job_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: s
 
 
 async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job: dict, jid: str) -> None:
-    session_id = load_session_id(chat_id)
-    before = _resume_snapshot()
+    # Its own thread: tapping Apply on three scan results gives three separate
+    # conversations, so "make it shorter" is never ambiguous.
+    label = " — ".join(x for x in (job.get("company"), job.get("title")) if x)
+    thread = threads.new_thread(chat_id, label or f"job {jid[:8]}")
     prompt = (
         "The user chose to apply to this job from a discovery scan. Build a tailored "
         "resume for it, following ALL your resume rules (never fabricate).\n\n"
@@ -503,28 +627,38 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
         "If the link is reachable, WebFetch it to read the full JD; if it's blocked, "
         "tailor from the details above and the user's memory. Save the resume JSON to "
         "resumes/ as usual so the PDF is generated, then briefly tell me what you "
-        "emphasized and any real gaps."
+        "emphasized and any real gaps.\n\n" + RESUME_MARKER_INSTRUCTION
     )
-    await ctx.bot.send_message(
+    sent = await ctx.bot.send_message(
         chat_id,
         f"📄 Tailoring your resume for {job.get('title')} @ {job.get('company')} — about a minute…")
-    typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
-    try:
-        text, session_id = await run_turn(prompt, session_id, model=config.model_for("resume"))
-    except Exception as e:  # noqa: BLE001
-        log.exception("resume generation failed")
-        await ctx.bot.send_message(
-            chat_id,
-            f"⚠️ Couldn't build the resume: {e}\n\n"
-            f"You can still apply — send me the job link and I'll tailor one.")
-        return
-    finally:
-        typing.cancel()
+    threads.bind_message(chat_id, _message_id(sent), thread)
 
-    save_session_id(chat_id, session_id)
+    async with _lock_for(chat_id, thread):
+        session_id = load_session_id(chat_id, thread)
+        before = _resume_snapshot()
+        typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
+        try:
+            text, session_id = await run_turn(prompt, session_id,
+                                              model=config.model_for("resume"))
+        except Exception as e:  # noqa: BLE001
+            log.exception("resume generation failed")
+            threads.forget(chat_id, thread)  # nothing happened in it; don't leave a stub
+            await ctx.bot.send_message(
+                chat_id,
+                f"⚠️ Couldn't build the resume: {e}\n\n"
+                f"You can still apply — send me the job link and I'll tailor one.")
+            return
+        finally:
+            typing.cancel()
+
+        save_session_id(chat_id, session_id, thread)
+        threads.touch(chat_id, thread)
+
     jobs_store.set_decision(jid, "applied")
-    await _send_chat(ctx.bot, chat_id, text)
-    await _deliver_changed_resumes(ctx.bot, chat_id, before)
+    text, claimed = strip_resume_marker(text)
+    await _send_chat(ctx.bot, chat_id, text, thread)
+    await _deliver_changed_resumes(ctx.bot, chat_id, before, thread, claimed)
 
 
 async def _on_critique_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
@@ -549,7 +683,10 @@ async def _on_critique_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     await query.answer("Scoring your resume…")
 
     chat_id = update.effective_chat.id
-    session_id = load_session_id(chat_id)
+    # Critique inside the thread that built this resume — that session is the
+    # only one holding the JD the prompt refers to. Falls back to the main
+    # conversation for resumes written before threads existed.
+    thread = threads.resume_owner(chat_id, name) or threads.MAIN
     prompt = (
         f"Critique resumes/{name} and score it against the JD from this "
         "conversation, following your normal critique rules (the compact Telegram "
@@ -558,16 +695,18 @@ async def _on_critique_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     )
     typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
     try:
-        text, session_id = await run_turn(
-            prompt, session_id, model=config.model_for("critique"))
+        async with _lock_for(chat_id, thread):
+            session_id = load_session_id(chat_id, thread)
+            text, session_id = await run_turn(
+                prompt, session_id, model=config.model_for("critique"))
+            save_session_id(chat_id, session_id, thread)
     except Exception as e:  # noqa: BLE001
         log.exception("critique failed")
         await ctx.bot.send_message(chat_id, f"⚠️ Couldn't run the critique: {e}")
         return
     finally:
         typing.cancel()
-    save_session_id(chat_id, session_id)
-    await _send_chat(ctx.bot, chat_id, text)
+    await _send_chat(ctx.bot, chat_id, text, thread)
 
 
 async def _do_scan(bot, chat_id: int, manual: bool) -> None:
@@ -649,6 +788,76 @@ def _docx_to_text(path: Path):
         return None
 
 
+def _route_thread(update: Update, allow_new: bool = True):
+    """Decide which conversation a message belongs to.
+
+    Returns (thread_key, opened) where `opened` is True for a brand-new thread.
+    `allow_new=False` routes replies but never forks: an uploaded CV is a memory
+    operation and belongs in the main conversation, unless it is a reply into a
+    job thread (e.g. sending the JD as a PDF).
+
+    Replying to a message keeps you in the thread that message came from — the
+    native Telegram gesture, so no command to remember and the client shows the
+    thread visually. A fresh (non-reply) message carrying a link starts its own
+    thread, which is the case that used to turn one chat into a tangle: send
+    three job links and each gets a clean conversation instead of all three
+    sharing a history. Everything else stays in the main conversation.
+    """
+    chat_id = update.effective_chat.id
+    msg = update.message
+    # A document/photo message carries no .text at all — its words live in
+    # .caption — so neither attribute can be assumed present.
+    text = (getattr(msg, "text", None) or getattr(msg, "caption", None) or "") if msg else ""
+
+    reply_to = getattr(msg, "reply_to_message", None) if msg else None
+    if reply_to is not None:
+        existing = threads.thread_for_message(chat_id, reply_to.message_id)
+        if existing and threads.exists(chat_id, existing):
+            return existing, False
+
+    if not allow_new or onboarding.status() == "in_progress":
+        return threads.MAIN, False   # onboarding is one linear interview
+
+    url = threads.find_url(text)
+    if url:
+        return threads.new_thread(chat_id, threads.label_for_url(url)), True
+    return threads.MAIN, False
+
+
+async def _announce_thread(bot, chat_id: int, thread: str) -> None:
+    """Tell the user a separate conversation just opened, and how to stay in it."""
+    meta = threads.get(chat_id, thread) or {}
+    sent = await bot.send_message(
+        chat_id,
+        f"🧵 New thread for <b>{html.escape(meta.get('label') or thread)}</b> — "
+        "reply to my messages here to keep this job separate from the rest. "
+        "/threads lists them.",
+        parse_mode="HTML")
+    threads.bind_message(chat_id, _message_id(sent), thread)
+
+
+async def threads_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _allowed(update):
+        await update.message.reply_text("Sorry — this is a private bot.")
+        return
+    chat_id = update.effective_chat.id
+    items = threads.listing(chat_id)
+    if not items:
+        await update.message.reply_text(
+            "No job threads yet. Send me a job link and I'll open one — each link "
+            "gets its own conversation so they never mix.")
+        return
+    lines = ["🧵 <b>Your job threads</b>", ""]
+    for _key, meta in items:
+        resume = meta.get("resume")
+        tail = f" — 📄 {html.escape(resume)}" if resume else ""
+        lines.append(f"• <b>{html.escape(meta.get('label') or _key)}</b>{tail}")
+    lines.append("")
+    lines.append("Reply to a message in a thread to continue it. "
+                 "/reset clears them all.")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _allowed(update):
         await update.message.reply_text("Sorry — this is a private bot.")
@@ -663,7 +872,10 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if onboarding.status() == "not_started" and onboarding.is_fresh():
         await _launch_onboarding(update, ctx, user_message=update.message.text)
         return
-    await _run_and_reply(update, ctx, update.message.text)
+    thread, opened = _route_thread(update)
+    if opened:
+        await _announce_thread(ctx.bot, chat_id, thread)
+    await _run_and_reply(update, ctx, update.message.text, thread=thread)
 
 
 async def on_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -736,7 +948,8 @@ async def on_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "those — please export it to PDF and resend.")
         return
 
-    await _run_and_reply(update, ctx, prompt, files=attach)
+    await _run_and_reply(update, ctx, prompt, files=attach,
+                         thread=_route_thread(update, allow_new=False)[0])
 
 
 async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -766,7 +979,8 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
               "Extract any REAL experiences, skills, or profile details and save them "
               "into memory following your rules. Never invent anything not present. "
               "Then briefly summarize what you saved.")
-    await _run_and_reply(update, ctx, prompt)
+    await _run_and_reply(update, ctx, prompt,
+                         thread=_route_thread(update, allow_new=False)[0])
 
 
 def main() -> None:
@@ -799,6 +1013,7 @@ def main() -> None:
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("onboard", onboard_cmd))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("threads", threads_cmd))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))

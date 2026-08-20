@@ -128,8 +128,9 @@ def test_critique_tap_runs_on_critique_model(monkeypatch):
 
     sent_text = {}
 
-    async def fake_send_chat(bot_, chat_id, text):
+    async def fake_send_chat(bot_, chat_id, text, thread=None):
         sent_text["text"] = text
+        sent_text["thread"] = thread
 
     async def fake_keep_typing(bot_, chat_id):
         return
@@ -137,8 +138,8 @@ def test_critique_tap_runs_on_critique_model(monkeypatch):
     monkeypatch.setattr(bot, "run_turn", fake_run_turn)
     monkeypatch.setattr(bot, "_send_chat", fake_send_chat)
     monkeypatch.setattr(bot, "_keep_typing", fake_keep_typing)
-    monkeypatch.setattr(bot, "load_session_id", lambda c: "sess-0")
-    monkeypatch.setattr(bot, "save_session_id", lambda c, s: None)
+    monkeypatch.setattr(bot, "load_session_id", lambda c, t=None: "sess-0")
+    monkeypatch.setattr(bot, "save_session_id", lambda c, s, t=None: None)
     monkeypatch.setattr(config, "model_for", lambda task: f"model-{task}")
 
     q = _FakeQuery("crit:c42")
