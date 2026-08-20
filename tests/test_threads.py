@@ -108,6 +108,29 @@ def test_format_label_is_capped():
     assert len(label) <= threads._MAX_LABEL
 
 
+def test_a_real_world_long_title_fits_whole():
+    """The first live label hit the old 60-char cap exactly."""
+    label = threads.format_label(
+        "Full Stack Developer (NodeJS/ReactJS/AWS)", "Net2Source (N2S)")
+    assert label == "Full Stack Developer (NodeJS/ReactJS/AWS) — Net2Source (N2S)"
+
+
+def test_overlong_pair_trims_the_position_and_keeps_the_company():
+    """A right-hand cut would chop the employer — the identifying half."""
+    label = threads.format_label("Senior " * 20, "Net2Source (N2S)")
+    assert len(label) <= threads._MAX_LABEL
+    assert label.endswith("— Net2Source (N2S)")
+    assert "…" in label
+
+
+def test_a_company_that_fills_the_budget_drops_the_position():
+    """Better a bare company than 'Sen… — Company'."""
+    company = "C" * 78
+    label = threads.format_label("Senior Backend Engineer", company)
+    assert label == company[:threads._MAX_LABEL]
+    assert "…" not in label
+
+
 def test_set_label_names_a_provisional_thread(tmp_path, monkeypatch):
     t = _isolate(tmp_path, monkeypatch)
     key = t.new_thread(CHAT, "jobstreet.com")

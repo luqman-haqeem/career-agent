@@ -75,15 +75,36 @@ def label_for_url(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-# Long enough for "Senior Full Stack Engineer — Some Company Sdn Bhd", short
-# enough to stay a one-line header on a phone.
-_MAX_LABEL = 60
+# Real postings run long once they list a stack ("Full Stack Developer
+# (NodeJS/ReactJS/AWS) — Net2Source (N2S)" is 60 on its own), so leave room to
+# spare. A header that wraps to two lines is fine; one that loses the employer
+# is not.
+_MAX_LABEL = 80
+# Below this, a trimmed position is too stubby to identify anything, so drop it
+# rather than show "Sen… — Company".
+_MIN_POSITION = 8
 
 
 def format_label(position: str, company: str) -> str:
-    """Render a thread label as 'Position — Company', dropping either if absent."""
-    parts = [p.strip() for p in (position, company) if p and p.strip()]
-    return " — ".join(parts)[:_MAX_LABEL]
+    """Render a thread label as 'Position — Company', dropping either if absent.
+
+    When the pair is too long, the POSITION is trimmed and the company kept
+    whole — a plain right-hand cut would chop the employer, which is the half
+    that actually identifies the job.
+    """
+    position = (position or "").strip()
+    company = (company or "").strip()
+    if not company:
+        return position[:_MAX_LABEL]
+    if not position:
+        return company[:_MAX_LABEL]
+    full = f"{position} — {company}"
+    if len(full) <= _MAX_LABEL:
+        return full
+    room = _MAX_LABEL - len(company) - len(" — ") - len("…")
+    if room < _MIN_POSITION:
+        return company[:_MAX_LABEL]
+    return f"{position[:room].rstrip()}… — {company}"
 
 
 def new_thread(chat_id: int, label: str, named: bool = False) -> str:
