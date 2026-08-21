@@ -185,6 +185,38 @@ def _thread_prefix(chat_id: int, thread: str) -> str:
     return f"🧵 **{label}**\n\n" if label else ""
 
 
+def _retry_prefix(chat_id: int, thread: str):
+    """Context to re-prime a fresh session with when a thread's history is lost.
+
+    OpenCode's stale-session retry starts from nothing, so a job thread would
+    come back asking for a JD the user already sent. The label and source URL
+    survive in the thread store, which is enough for the agent to re-read the
+    posting itself.
+    """
+    if not thread or thread == threads.MAIN:
+        return None
+    meta = threads.get(chat_id, thread) or {}
+    label, url = meta.get("label"), meta.get("url")
+    if not label and not url:
+        return None
+    where = f" The posting is at {url} — re-read it if you need the details." if url else ""
+    return (f"[Context: this conversation is about the job '{label}'. Its earlier "
+            f"history was lost to an error, so you are starting fresh.{where}]")
+
+
+def _session_was_reset(previous, current) -> bool:
+    """True when a turn abandoned the session it was asked to resume."""
+    return bool(previous and current and previous != current)
+
+
+def _lost_history_notice(chat_id: int, thread: str) -> str:
+    meta = threads.get(chat_id, thread) or {}
+    label = meta.get("label") or "this job"
+    return (f"⚠️ _Heads up: the previous run for **{label}** failed and I lost this "
+            f"thread's history, so I'm working from the posting rather than our "
+            f"earlier conversation._\n\n")
+
+
 def _reply_params(reply_to):
     """Quote the message being answered, degrading if it has been deleted.
 
@@ -390,11 +422,13 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
         threads.bind_message(chat_id, update.message.message_id, thread)
 
     async with _lock_for(chat_id, thread):
-        session_id = load_session_id(chat_id, thread)
+        previous = load_session_id(chat_id, thread)
         before = _resume_snapshot()
         typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
         try:
-            text, session_id = await run_turn(prompt, session_id, files=files, model=model)
+            text, session_id = await run_turn(
+                prompt, previous, files=files, model=model,
+                retry_prefix=_retry_prefix(chat_id, thread))
         except Exception as e:  # noqa: BLE001
             log.exception("turn failed")
             sent = await update.message.reply_text(f"⚠️ Something went wrong: {e}")
@@ -406,6 +440,7 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
 
         save_session_id(chat_id, session_id, thread)
         threads.touch(chat_id, thread)
+        lost = _session_was_reset(previous, session_id)
 
     text, completed = onboarding.strip_complete_marker(text)
     if completed and onboarding.status() == "in_progress":
@@ -414,6 +449,8 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     text, job_label = strip_job_marker(text)
     if job_label and thread != threads.MAIN:
         threads.set_label(chat_id, thread, job_label)
+    if lost:
+        text = _lost_history_notice(chat_id, thread) + text
     # Quote the message being answered, so the job an answer belongs to is
     # visible in a chat that has no real threads.
     anchor = update.message.message_id if update.message else None
@@ -697,7 +734,7 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
     # conversations, so "make it shorter" is never ambiguous.
     label = threads.format_label(job.get("title"), job.get("company"))
     thread = threads.new_thread(chat_id, label or f"job {jid[:8]}",
-                                named=bool(label))
+                                named=bool(label), url=job.get("url"))
     prompt = (
         "The user chose to apply to this job from a discovery scan. Build a tailored "
         "resume for it, following ALL your resume rules (never fabricate).\n\n"
@@ -899,15 +936,20 @@ def _route_thread(update: Update, allow_new: bool = True):
     if reply_to is not None:
         existing = threads.thread_for_message(chat_id, reply_to.message_id)
         if existing and threads.exists(chat_id, existing):
+            threads.set_current(chat_id, existing)   # replying switches threads
             return existing, False
 
-    if not allow_new or onboarding.status() == "in_progress":
+    if onboarding.status() == "in_progress":
         return threads.MAIN, False   # onboarding is one linear interview
 
-    url = threads.find_url(text)
+    url = threads.find_url(text) if allow_new else None
     if url:
-        return threads.new_thread(chat_id, threads.label_for_url(url)), True
-    return threads.MAIN, False
+        return threads.new_thread(chat_id, threads.label_for_url(url), url=url), True
+
+    # Sticky: keep typing in whichever job was last worked on. Requiring a reply
+    # here is what sent a bare "yes" — answering the bot's own question — into
+    # the main conversation, where it had no idea what had been agreed.
+    return threads.current(chat_id), False
 
 
 async def _announce_thread(bot, chat_id: int, thread: str) -> None:
@@ -933,15 +975,30 @@ async def threads_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "No job threads yet. Send me a job link and I'll open one — each link "
             "gets its own conversation so they never mix.")
         return
+    cur = threads.current(chat_id)
     lines = ["🧵 <b>Your job threads</b>", ""]
-    for _key, meta in items:
+    for key, meta in items:
         resume = meta.get("resume")
         tail = f" — 📄 {html.escape(resume)}" if resume else ""
-        lines.append(f"• <b>{html.escape(meta.get('label') or _key)}</b>{tail}")
+        here = " ← you're here" if key == cur else ""
+        lines.append(f"• <b>{html.escape(meta.get('label') or key)}</b>{tail}{here}")
+    if cur == threads.MAIN:
+        lines.append("")
+        lines.append("You're in the <b>main</b> conversation.")
     lines.append("")
-    lines.append("Reply to a message in a thread to continue it. "
-                 "/reset clears them all.")
+    lines.append("Typing continues the thread you're in. Reply to a message to "
+                 "switch to another. /main leaves threads, /reset clears them.")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def main_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Leave the current job thread and go back to the general conversation."""
+    if not _allowed(update):
+        await update.message.reply_text("Sorry — this is a private bot.")
+        return
+    threads.set_current(update.effective_chat.id, threads.MAIN)
+    await update.message.reply_text(
+        "↩️ Back in the main conversation. Reply to a job's message to return to it.")
 
 
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1103,6 +1160,7 @@ def main() -> None:
     app.add_handler(CommandHandler("onboard", onboard_cmd))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("threads", threads_cmd))
+    app.add_handler(CommandHandler("main", main_cmd))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))

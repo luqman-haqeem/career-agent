@@ -41,15 +41,20 @@ def _now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
 
+def _blank() -> dict:
+    return {"threads": {}, "messages": {}, "current": None}
+
+
 def _load(chat_id: int) -> dict:
     try:
         data = json.loads(_path(chat_id).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
-        return {"threads": {}, "messages": {}}
+        return _blank()
     if not isinstance(data, dict):
-        return {"threads": {}, "messages": {}}
+        return _blank()
     data.setdefault("threads", {})
     data.setdefault("messages", {})
+    data.setdefault("current", None)
     return data
 
 
@@ -107,13 +112,18 @@ def format_label(position: str, company: str) -> str:
     return f"{position[:room].rstrip()}… — {company}"
 
 
-def new_thread(chat_id: int, label: str, named: bool = False) -> str:
-    """Create a thread and return its key.
+def new_thread(chat_id: int, label: str, named: bool = False,
+               url: str = None) -> str:
+    """Create a thread, make it current, and return its key.
 
     `named` marks a label as real (a position and company we actually know)
     rather than provisional. A provisional label — the hostname we fall back to
     when a link arrives before anyone has read the JD — gets replaced as soon as
     something better turns up; a real one is never silently overwritten.
+
+    `url` is the posting this thread came from. Kept so a thread whose OpenCode
+    session is lost can be re-primed from the source instead of asking the user
+    to resend a link they already sent.
     """
     data = _load(chat_id)
     key = f"t{secrets.token_urlsafe(4)}"
@@ -121,7 +131,9 @@ def new_thread(chat_id: int, label: str, named: bool = False) -> str:
         key = f"t{secrets.token_urlsafe(4)}"
     now = _now_iso()
     data["threads"][key] = {"label": label[:_MAX_LABEL], "named": bool(named),
-                            "created_at": now, "last_at": now, "resume": None}
+                            "url": url, "created_at": now, "last_at": now,
+                            "resume": None}
+    data["current"] = key
     _save(chat_id, data)
     return key
 
@@ -217,8 +229,32 @@ def forget(chat_id: int, key: str) -> None:
     data = _load(chat_id)
     data["threads"].pop(key, None)
     data["messages"] = {m: k for m, k in data["messages"].items() if k != key}
+    if data.get("current") == key:
+        data["current"] = None   # never leave typing pointed at a dead thread
     _save(chat_id, data)
 
 
 def forget_all(chat_id: int) -> None:
-    _save(chat_id, {"threads": {}, "messages": {}})
+    _save(chat_id, _blank())
+
+
+# --- the "current" thread --------------------------------------------------
+# Requiring a reply to continue a job reads fine on paper and fails in
+# practice: when the bot ends a turn with a question ("Want me to judge fit?"),
+# nobody swipes-to-reply to answer "yes" -- they type it, and it lands in the
+# main conversation with none of the job's context. So the last thread you used
+# stays current, and typing continues it. Replying still switches threads, and
+# every reply carries its thread's label, so you can always see where you are.
+def set_current(chat_id: int, key) -> None:
+    data = _load(chat_id)
+    if key is not None and key != MAIN and key not in data["threads"]:
+        return
+    data["current"] = None if key == MAIN else key
+    _save(chat_id, data)
+
+
+def current(chat_id: int) -> str:
+    """The thread typing continues, or MAIN."""
+    data = _load(chat_id)
+    key = data.get("current")
+    return key if key and key in data["threads"] else MAIN

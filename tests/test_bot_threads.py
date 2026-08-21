@@ -267,6 +267,98 @@ def test_delivery_skips_a_file_owned_by_another_thread(monkeypatch):
     assert "globex.json" not in sent   # belongs to thread b
 
 
+# --- sticky routing --------------------------------------------------------
+def test_typing_continues_the_thread_you_are_in():
+    """The bug: the bot asked a question, 'yes' was typed, and it went to main."""
+    thread, _ = bot._route_thread(_update("https://acme.com/job/1", message_id=1))
+    again, opened = bot._route_thread(_update("yes", message_id=2))
+    assert again == thread
+    assert opened is False
+
+
+def test_a_new_link_switches_to_a_new_thread():
+    a, _ = bot._route_thread(_update("https://a.com/job/1", message_id=1))
+    b, opened = bot._route_thread(_update("https://b.com/job/2", message_id=2))
+    assert b != a and opened is True
+    assert bot._route_thread(_update("yes", message_id=3))[0] == b
+
+
+def test_replying_switches_the_current_thread_back():
+    a, _ = bot._route_thread(_update("https://a.com/job/1", message_id=1))
+    threads.bind_message(CHAT, 500, a)
+    b, _ = bot._route_thread(_update("https://b.com/job/2", message_id=2))
+    assert threads.current(CHAT) == b
+    back, _ = bot._route_thread(_update("shorter", 9, reply_to_id=500))
+    assert back == a
+    assert bot._route_thread(_update("and again", message_id=10))[0] == a
+
+
+def test_typing_stays_in_main_when_no_thread_is_open():
+    assert bot._route_thread(_update("what are my goals?"))[0] == threads.MAIN
+
+
+def test_main_command_leaves_the_current_thread():
+    key, _ = bot._route_thread(_update("https://acme.com/job/1", message_id=1))
+    assert threads.current(CHAT) == key
+    threads.set_current(CHAT, threads.MAIN)
+    assert bot._route_thread(_update("hello", message_id=2))[0] == threads.MAIN
+
+
+def test_forgetting_the_current_thread_falls_back_to_main():
+    """A failed Apply drops its thread; typing must not point at a dead one."""
+    key, _ = bot._route_thread(_update("https://acme.com/job/1", message_id=1))
+    threads.forget(CHAT, key)
+    assert threads.current(CHAT) == threads.MAIN
+
+
+def test_uploads_are_sticky_too():
+    key, _ = bot._route_thread(_update("https://acme.com/job/1", message_id=1))
+    assert bot._route_thread(_update("see attached", message_id=2),
+                             allow_new=False)[0] == key
+
+
+def test_an_upload_never_opens_a_thread_from_a_link():
+    upd = _update("https://acme.com/jd.pdf")
+    thread, opened = bot._route_thread(upd, allow_new=False)
+    assert thread == threads.MAIN and opened is False
+
+
+# --- lost-session recovery -------------------------------------------------
+def test_session_reset_is_detected():
+    assert bot._session_was_reset("ses_old", "ses_new") is True
+    assert bot._session_was_reset("ses_old", "ses_old") is False
+    assert bot._session_was_reset(None, "ses_new") is False   # first turn, not a reset
+
+
+def test_retry_prefix_carries_the_job_and_its_url():
+    """A lost session must not come back asking for a JD already supplied."""
+    key = threads.new_thread(CHAT, "linkedin.com", url="https://x.io/job/7")
+    threads.set_label(CHAT, key, "Backend Software Engineer — Wurth IT")
+    prefix = bot._retry_prefix(CHAT, key)
+    assert "Backend Software Engineer — Wurth IT" in prefix
+    assert "https://x.io/job/7" in prefix
+
+
+def test_retry_prefix_is_none_for_the_main_conversation():
+    assert bot._retry_prefix(CHAT, threads.MAIN) is None
+    assert bot._retry_prefix(CHAT, None) is None
+
+
+def test_retry_prefix_survives_a_thread_with_no_url():
+    key = threads.new_thread(CHAT, "Backend Developer — Avanade", named=True)
+    prefix = bot._retry_prefix(CHAT, key)
+    assert "Avanade" in prefix
+    assert "http" not in prefix
+
+
+def test_lost_history_notice_names_the_job():
+    key = threads.new_thread(CHAT, "linkedin.com")
+    threads.set_label(CHAT, key, "Backend Software Engineer — Wurth IT")
+    notice = bot._lost_history_notice(CHAT, key)
+    assert "Wurth IT" in notice
+    assert notice.endswith("\n\n")
+
+
 # --- job marker (thread naming) --------------------------------------------
 def test_job_marker_becomes_a_position_company_label():
     clean, label = bot.strip_job_marker(

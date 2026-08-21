@@ -8,10 +8,13 @@ Contract:
 """
 import asyncio
 import json
+import logging
 import os
 import signal
 
 import config
+
+log = logging.getLogger("career-agent.agent")
 
 # Grace period between TERM and KILL when reaping a timed-out run.
 _KILL_GRACE = 5
@@ -118,13 +121,29 @@ def _opencode_parse(out: str, fallback_session: str | None):
     return reply, session_id
 
 
-async def _opencode_run_turn(user_message: str, session_id: str | None = None, files=None, model=None):
-    """Run one turn via the OpenCode CLI. Returns (reply_text, session_id)."""
+async def _opencode_run_turn(user_message: str, session_id: str | None = None,
+                             files=None, model=None, retry_prefix: str | None = None):
+    """Run one turn via the OpenCode CLI. Returns (reply_text, session_id).
+
+    `retry_prefix` is prepended to the message if the session has to be
+    abandoned — see below.
+    """
     rc, out, err = await _opencode_invoke(user_message, session_id, files, model)
 
     # If resuming a stale/expired session failed, retry once fresh.
+    #
+    # This drops the whole conversation, which for a job thread means dropping
+    # the job description the user already supplied. It used to happen in total
+    # silence, so a failed run came back as a confident reply that asked for the
+    # JD again. Log it, and let the caller re-prime the fresh session with
+    # whatever context it can reconstruct.
     if rc != 0 and session_id:
-        rc, out, err = await _opencode_invoke(user_message, None, files, model)
+        log.warning(
+            "opencode failed on session %s (rc=%s); retrying with a fresh "
+            "session — this turn loses the prior history. stderr: %s",
+            session_id, rc, (err or out or "").strip()[:300] or "(none)")
+        message = f"{retry_prefix}\n\n{user_message}" if retry_prefix else user_message
+        rc, out, err = await _opencode_invoke(message, None, files, model)
 
     if rc != 0:
         raise RuntimeError(err.strip() or out.strip() or f"opencode exited with code {rc}")
@@ -146,9 +165,14 @@ async def _opencode_run_turn(user_message: str, session_id: str | None = None, f
 
 
 # --- dispatcher ------------------------------------------------------------
-async def run_turn(user_message: str, session_id: str | None = None, files=None, model=None):
+async def run_turn(user_message: str, session_id: str | None = None, files=None,
+                   model=None, retry_prefix: str | None = None):
     """Run one user turn via OpenCode. Returns (reply_text, session_id).
 
     `model` overrides config.OPENCODE_MODEL for this turn (None = default).
+    `retry_prefix` re-primes the message if a failed session forces a fresh one;
+    callers compare the returned session_id against the one they passed to tell
+    whether that happened.
     """
-    return await _opencode_run_turn(user_message, session_id, files, model)
+    return await _opencode_run_turn(user_message, session_id, files, model,
+                                    retry_prefix)

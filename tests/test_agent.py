@@ -59,7 +59,8 @@ def test_parse_skips_non_text_parts():
 def test_run_turn_uses_opencode_path(monkeypatch):
     calls = {}
 
-    async def fake_opencode(user_message, session_id=None, files=None, model=None):
+    async def fake_opencode(user_message, session_id=None, files=None, model=None,
+                            retry_prefix=None):
         calls["msg"] = user_message
         return "reply-text", "ses_new"
 
@@ -86,7 +87,8 @@ def test_build_args_falls_back_to_default_model(monkeypatch):
 def test_run_turn_threads_model(monkeypatch):
     calls = {}
 
-    async def fake_opencode(user_message, session_id=None, files=None, model=None):
+    async def fake_opencode(user_message, session_id=None, files=None, model=None,
+                            retry_prefix=None):
         calls["model"] = model
         return "r", "s"
 
@@ -191,6 +193,54 @@ def test_run_turn_threads_model_through_retry(monkeypatch):
     assert seen[0][1] == "openrouter/x/y"   # model on first invoke
     assert seen[1][1] == "openrouter/x/y"   # model survived the retry
     assert seen[1][0] is None               # retry uses a fresh (None) session
+
+
+def test_stale_session_retry_reprimes_with_the_retry_prefix(monkeypatch):
+    """A lost session must not come back asking for a JD the user already sent."""
+    seen = []
+
+    async def fake_invoke(user_message, session_id, files, model=None):
+        seen.append((session_id, user_message))
+        if len(seen) == 1:
+            return 1, "", "session not found"
+        return 0, json.dumps({"part": {"type": "text", "id": "p1", "text": "ok"}}), ""
+
+    monkeypatch.setattr(agent, "_opencode_invoke", fake_invoke)
+    reply, _ = asyncio.run(agent._opencode_run_turn(
+        "resume", session_id="ses_old", retry_prefix="[Context: job X at http://j]"))
+    assert reply == "ok"
+    assert seen[0][1] == "resume"                       # first try, unchanged
+    assert "[Context: job X at http://j]" in seen[1][1]  # retry re-primed
+    assert "resume" in seen[1][1]
+    assert seen[1][0] is None                            # fresh session
+
+
+def test_retry_without_a_prefix_sends_the_message_unchanged(monkeypatch):
+    seen = []
+
+    async def fake_invoke(user_message, session_id, files, model=None):
+        seen.append(user_message)
+        if len(seen) == 1:
+            return 1, "", "stale"
+        return 0, json.dumps({"part": {"type": "text", "id": "p1", "text": "ok"}}), ""
+
+    monkeypatch.setattr(agent, "_opencode_invoke", fake_invoke)
+    asyncio.run(agent._opencode_run_turn("hi", session_id="ses_old"))
+    assert seen == ["hi", "hi"]
+
+
+def test_a_discarded_session_is_logged(monkeypatch, caplog):
+    """The retry used to drop a conversation in total silence."""
+    async def fake_invoke(user_message, session_id, files, model=None):
+        if session_id:
+            return 1, "", "boom"
+        return 0, json.dumps({"part": {"type": "text", "id": "p1", "text": "ok"}}), ""
+
+    monkeypatch.setattr(agent, "_opencode_invoke", fake_invoke)
+    with caplog.at_level("WARNING"):
+        asyncio.run(agent._opencode_run_turn("hi", session_id="ses_old"))
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("ses_old" in m and "boom" in m for m in messages)
 
 
 def test_empty_reply_raises_instead_of_returning_a_placeholder(monkeypatch):
