@@ -135,6 +135,35 @@ def _critique_keyboard(token: str) -> InlineKeyboardMarkup:
         [[InlineKeyboardButton("📝 Critique it", callback_data=f"crit:{token}")]])
 
 
+# --- Job-thread action buttons ---------------------------------------------
+# Answering "yes" to "want me to build a resume?" used to mean typing it, which
+# is the moment the reply-gesture rule bit hardest. Offer the two real choices
+# as buttons under the answer instead.
+_in_flight_threads: set = set()   # threads currently generating a resume
+
+
+def _job_actions_keyboard(thread: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("📄 Create resume", callback_data=f"th:cv:{thread}"),
+        InlineKeyboardButton("⏭ Skip", callback_data=f"th:sk:{thread}"),
+    ]])
+
+
+def _job_actions_for(chat_id: int, thread: str):
+    """Buttons to offer under a reply, or None.
+
+    Only in a job thread, and only until that job has a resume — after that the
+    Critique button on the delivered file is the useful next step, and repeating
+    "Create resume" under every follow-up would just be noise.
+    """
+    if not thread or thread == threads.MAIN:
+        return None
+    meta = threads.get(chat_id, thread)
+    if not meta or meta.get("resume"):
+        return None
+    return _job_actions_keyboard(thread)
+
+
 def _clear_session(chat_id: int, thread: str = threads.MAIN) -> None:
     p = _session_path(chat_id, thread)
     if p.exists():
@@ -229,19 +258,26 @@ def _reply_params(reply_to):
 
 
 async def _send_chat(bot, chat_id: int, text: str, thread: str = None,
-                     reply_to: int = None) -> list:
+                     reply_to: int = None, reply_markup=None) -> list:
     """Send text as Telegram HTML (plain-text fallback); return sent message ids.
 
     When `thread` is given the reply carries its label and each sent message is
     bound to it, so a reply to any of them routes the next turn back into the
     same conversation. `reply_to` quotes the message being answered — only on
     the first chunk, so a long answer isn't a wall of repeated quote bars.
+    `reply_markup` rides on the LAST chunk, so buttons sit under the end of the
+    answer rather than in the middle of it.
     """
     text = _thread_prefix(chat_id, thread) + (text or "")
+    pieces = list(telegram_format.chunk(text)) or [""]
     ids = []
     params = _reply_params(reply_to)
-    for piece in telegram_format.chunk(text):
-        kw = {"reply_parameters": params} if params else {}
+    for i, piece in enumerate(pieces):
+        kw = {}
+        if params:
+            kw["reply_parameters"] = params
+        if reply_markup is not None and i == len(pieces) - 1:
+            kw["reply_markup"] = reply_markup
         try:
             sent = await bot.send_message(
                 chat_id, telegram_format.to_telegram_html(piece),
@@ -336,6 +372,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if data.startswith("crit:"):
         await _on_critique_action(update, ctx, data)
+        return
+    if data.startswith("th:"):
+        await _on_thread_action(update, ctx, data)
         return
     if query.data == "reset_context":
         _clear_all_sessions(update.effective_chat.id)
@@ -454,7 +493,8 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     # Quote the message being answered, so the job an answer belongs to is
     # visible in a chat that has no real threads.
     anchor = update.message.message_id if update.message else None
-    await _send(update, text, thread, reply_to=anchor)
+    await _send_chat(ctx.bot, chat_id, text, thread, reply_to=anchor,
+                     reply_markup=_job_actions_for(chat_id, thread))
     await _deliver_new_files(update, before, thread, claimed, reply_to=anchor)
 
 
@@ -780,6 +820,105 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
                      reply_to=_message_id(sent))   # quote the "Tailoring…" notice
     await _deliver_changed_resumes(ctx.bot, chat_id, before, thread, claimed,
                                    reply_to=_message_id(sent))
+
+
+async def _on_thread_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+                            data: str) -> None:
+    """Handle the Create-resume / Skip buttons under a job thread's reply."""
+    query = update.callback_query
+    parts = data.split(":")
+    if len(parts) < 3:
+        await query.answer()
+        return
+    action, thread = parts[1], parts[2]
+    chat_id = update.effective_chat.id
+
+    if not threads.exists(chat_id, thread) or thread == threads.MAIN:
+        await query.answer("That job thread is closed.", show_alert=True)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001 - message too old / unchanged
+            pass
+        return
+
+    if action == "sk":
+        label = (threads.get(chat_id, thread) or {}).get("label") or "that job"
+        threads.forget(chat_id, thread)   # also drops it as the current thread
+        _clear_session(chat_id, thread)
+        await query.answer("Skipped ⏭")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001
+            pass
+        await ctx.bot.send_message(
+            chat_id, f"⏭ Closed <b>{html.escape(label)}</b>. Back in the main "
+                     "conversation.", parse_mode="HTML")
+        return
+
+    if action == "cv":
+        if thread in _in_flight_threads:
+            await query.answer("Already building — please wait.", show_alert=True)
+            return
+        await query.answer("Building your resume…")
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001
+            pass
+        _in_flight_threads.add(thread)
+        try:
+            await _generate_resume_in_thread(
+                ctx, chat_id, thread, _message_id(getattr(query, "message", None)))
+        finally:
+            _in_flight_threads.discard(thread)
+        return
+
+    await query.answer()  # unknown action — dismiss the spinner
+
+
+async def _generate_resume_in_thread(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int,
+                                     thread: str, anchor: int = None) -> None:
+    """Build a resume for the job this thread is already about.
+
+    The thread's session holds the JD, so the prompt does not restate it —
+    restating a half-remembered version is how invented details get in.
+    """
+    meta = threads.get(chat_id, thread) or {}
+    label = meta.get("label") or "this job"
+    prompt = (
+        "Build a tailored resume for the job in this conversation, following ALL "
+        "your resume rules (never fabricate; use only what memory actually holds). "
+        "Save the resume JSON to resumes/ as usual so the PDF is generated, then "
+        "briefly tell me what you emphasized and any real gaps.\n\n"
+        + RESUME_MARKER_INSTRUCTION)
+    sent = await ctx.bot.send_message(
+        chat_id, f"📄 Building your resume for {label} — about a minute…")
+    threads.bind_message(chat_id, _message_id(sent), thread)
+
+    async with _lock_for(chat_id, thread):
+        previous = load_session_id(chat_id, thread)
+        before = _resume_snapshot()
+        typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
+        try:
+            text, session_id = await run_turn(
+                prompt, previous, model=config.model_for("resume"),
+                retry_prefix=_retry_prefix(chat_id, thread))
+        except Exception as e:  # noqa: BLE001
+            log.exception("in-thread resume generation failed")
+            await ctx.bot.send_message(chat_id, f"⚠️ Couldn't build the resume: {e}")
+            return
+        finally:
+            typing.cancel()
+        save_session_id(chat_id, session_id, thread)
+        threads.touch(chat_id, thread)
+        lost = _session_was_reset(previous, session_id)
+
+    text, claimed = strip_resume_marker(text)
+    text, _job = strip_job_marker(text)
+    if lost:
+        text = _lost_history_notice(chat_id, thread) + text
+    await _send_chat(ctx.bot, chat_id, text, thread, reply_to=anchor)
+    await _deliver_changed_resumes(ctx.bot, chat_id, before, thread, claimed,
+                                   reply_to=anchor)
 
 
 async def _on_critique_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,

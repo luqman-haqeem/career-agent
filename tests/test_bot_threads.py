@@ -267,6 +267,142 @@ def test_delivery_skips_a_file_owned_by_another_thread(monkeypatch):
     assert "globex.json" not in sent   # belongs to thread b
 
 
+# --- Create resume / Skip buttons ------------------------------------------
+def test_a_job_thread_offers_the_two_buttons():
+    """Answering 'yes' by typing is what broke; offer the real choices instead."""
+    key = threads.new_thread(CHAT, "acme.com")
+    kb = bot._job_actions_for(CHAT, key)
+    labels = [b.text for row in kb.inline_keyboard for b in row]
+    assert labels == ["📄 Create resume", "⏭ Skip"]
+    data = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert data == [f"th:cv:{key}", f"th:sk:{key}"]
+
+
+def test_callback_data_fits_telegrams_limit():
+    key = threads.new_thread(CHAT, "acme.com")
+    for row in bot._job_actions_for(CHAT, key).inline_keyboard:
+        for b in row:
+            assert len(b.callback_data.encode()) <= 64
+
+
+def test_the_main_conversation_gets_no_job_buttons():
+    assert bot._job_actions_for(CHAT, threads.MAIN) is None
+    assert bot._job_actions_for(CHAT, None) is None
+
+
+def test_buttons_stop_once_the_job_has_a_resume():
+    """After delivery the Critique button is the useful next step, not this."""
+    key = threads.new_thread(CHAT, "acme.com")
+    threads.set_resume(CHAT, key, "acme.json")
+    assert bot._job_actions_for(CHAT, key) is None
+
+
+def test_an_unknown_thread_gets_no_buttons():
+    assert bot._job_actions_for(CHAT, "tGONE") is None
+
+
+def test_buttons_ride_on_the_last_chunk_only(monkeypatch):
+    """Buttons belong under the end of an answer, not inside it."""
+    monkeypatch.setattr(bot.telegram_format, "chunk", lambda t: iter(["a", "b", "c"]))
+    key = threads.new_thread(CHAT, "acme.com")
+    kb = bot._job_actions_for(CHAT, key)
+
+    seen = []
+
+    class Bot:
+        async def send_message(self, chat_id, text, parse_mode=None,
+                               reply_parameters=None, reply_markup=None, **kw):
+            seen.append(reply_markup)
+            return types.SimpleNamespace(message_id=len(seen))
+
+    asyncio.run(bot._send_chat(Bot(), CHAT, "long", thread=key, reply_markup=kb))
+    assert seen[:-1] == [None, None]
+    assert seen[-1] is kb
+
+
+def test_skip_closes_the_thread_and_its_session(monkeypatch):
+    key = threads.new_thread(CHAT, "acme.com")
+    bot.save_session_id(CHAT, "ses_job", key)
+    sent = []
+
+    class Query:
+        data = f"th:sk:{key}"
+        async def answer(self, text=None, show_alert=False): sent.append(("answer", text))
+        async def edit_message_reply_markup(self, reply_markup=None): sent.append(("markup", reply_markup))
+
+    async def fake_send_message(chat_id, text, parse_mode=None, **kw):
+        sent.append(("msg", text))
+
+    ctx = types.SimpleNamespace(bot=types.SimpleNamespace(send_message=fake_send_message))
+    upd = types.SimpleNamespace(callback_query=Query(),
+                                effective_chat=types.SimpleNamespace(id=CHAT))
+    asyncio.run(bot._on_thread_action(upd, ctx, f"th:sk:{key}"))
+
+    assert not threads.exists(CHAT, key)
+    assert threads.current(CHAT) == threads.MAIN
+    assert bot.load_session_id(CHAT, key) is None
+    assert ("markup", None) in sent          # button consumed
+    assert any(k == "msg" and "acme.com" in v for k, v in sent)
+
+
+def test_create_resume_runs_in_the_threads_own_session(monkeypatch):
+    """The JD lives in that session; the prompt must not restate it from memory."""
+    key = threads.new_thread(CHAT, "acme.com", url="https://x.io/7")
+    bot.save_session_id(CHAT, "ses_job", key)
+    seen = {}
+
+    async def fake_run_turn(prompt, session_id, model=None, retry_prefix=None, files=None):
+        seen["session"] = session_id
+        seen["prompt"] = prompt
+        seen["retry_prefix"] = retry_prefix
+        return "Emphasized AWS. [[RESUME:acme.json]]", "ses_job"
+
+    async def noop(*a, **k):
+        return None
+
+    async def fake_send_message(chat_id, text, **kw):
+        return types.SimpleNamespace(message_id=9)
+
+    monkeypatch.setattr(bot, "run_turn", fake_run_turn)
+    monkeypatch.setattr(bot, "_keep_typing", noop)
+    monkeypatch.setattr(bot, "_send_chat", noop)
+    monkeypatch.setattr(bot, "_deliver_changed_resumes", noop)
+    monkeypatch.setattr(config, "model_for", lambda task: None)
+
+    ctx = types.SimpleNamespace(bot=types.SimpleNamespace(send_message=fake_send_message))
+    asyncio.run(bot._generate_resume_in_thread(ctx, CHAT, key))
+
+    assert seen["session"] == "ses_job"                 # not a fresh session
+    assert "the job in this conversation" in seen["prompt"]
+    assert "[[RESUME:" in seen["prompt"]                # marker instruction attached
+    assert "https://x.io/7" in seen["retry_prefix"]     # recoverable if it fails
+
+
+def test_tapping_a_button_on_a_closed_thread_is_graceful():
+    answered = []
+
+    class Query:
+        async def answer(self, text=None, show_alert=False): answered.append(text)
+        async def edit_message_reply_markup(self, reply_markup=None): pass
+
+    upd = types.SimpleNamespace(callback_query=Query(),
+                                effective_chat=types.SimpleNamespace(id=CHAT))
+    asyncio.run(bot._on_thread_action(upd, types.SimpleNamespace(bot=None), "th:cv:tGONE"))
+    assert answered and "closed" in answered[0].lower()
+
+
+def test_malformed_thread_callback_is_ignored():
+    answered = []
+
+    class Query:
+        async def answer(self, text=None, show_alert=False): answered.append(text)
+
+    upd = types.SimpleNamespace(callback_query=Query(),
+                                effective_chat=types.SimpleNamespace(id=CHAT))
+    asyncio.run(bot._on_thread_action(upd, types.SimpleNamespace(bot=None), "th:cv"))
+    assert answered == [None]
+
+
 # --- sticky routing --------------------------------------------------------
 def test_typing_continues_the_thread_you_are_in():
     """The bug: the bot asked a question, 'yes' was typed, and it went to main."""
