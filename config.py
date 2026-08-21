@@ -111,6 +111,11 @@ SCAN_TZ = os.getenv("SCAN_TZ", "Asia/Kuala_Lumpur").strip()
 _scan_days = os.getenv("SCAN_WEEKDAYS", "0,3").strip()
 SCAN_WEEKDAYS = {int(x) for x in _scan_days.split(",") if x.strip() != ""}
 
+# How late a scheduled scan may fire and still run, in seconds. APScheduler's
+# default is 1 second, which silently drops the run if the process is busy at
+# the fire time. Discovery is not time-critical; an hour late beats not at all.
+SCAN_MISFIRE_GRACE = int(os.getenv("SCAN_MISFIRE_GRACE", "3600"))
+
 # Cap matches surfaced per scan (keeps Telegram noise down).
 MAX_MATCHES_PER_SCAN = int(os.getenv("MAX_MATCHES_PER_SCAN", "5"))
 

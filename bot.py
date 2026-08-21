@@ -1340,6 +1340,13 @@ def main() -> None:
                 _scheduled_scan,
                 time=dt.time(hour=config.SCAN_HOUR, tzinfo=_SCAN_TZ),
                 name="job-discovery-scan",
+                # APScheduler defaults to a 1-second misfire window, so a busy
+                # moment at the fire time silently skips the day's scan — that
+                # happened on 2026-08-21, missed by 8.6s, with nothing but a
+                # WARNING to show for it. A job scan does not care about being
+                # late, so allow an hour. coalesce (already the default) keeps a
+                # multi-day outage from firing a backlog of scans on restart.
+                job_kwargs={"misfire_grace_time": config.SCAN_MISFIRE_GRACE},
             )
             log.info("Job discovery scheduled daily at %02d:00 %s on weekdays %s.",
                      config.SCAN_HOUR, config.SCAN_TZ, sorted(config.SCAN_WEEKDAYS))
