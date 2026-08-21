@@ -9,6 +9,7 @@ import json
 import agent
 import config
 import jobs_store
+import jobstreet
 
 SCAN_PROMPT = """You are running an automated JOB DISCOVERY scan for the user.
 
@@ -20,11 +21,19 @@ Do this:
    pattern (e.g. location) may drop a job entirely. The LIVE / LOCATION / EXACT-URL
    hard gates and honesty always win over preferences — never fabricate or inflate
    to match a preference.
-2. Find candidate openings two ways:
-   a. ALWAYS check these preferred job boards FIRST — WebFetch each and read its
+2. Find candidate openings three ways:
+   a. START with these JobStreet Malaysia listings, already pulled for you from
+      JobStreet's own search API. They are CURRENTLY OPEN — the API only returns
+      live postings — so they PASS the LIVE gate below WITHOUT being fetched.
+      Do NOT WebFetch these urls. JobStreet blocks non-browser requests and
+      every fetch returns 403, which would make you wrongly drop a good job.
+      Judge them from the title, employer, location, arrangement, salary and
+      teaser given here, and copy the url EXACTLY as printed.
+{prefetched}
+   b. ALSO check these preferred job boards — WebFetch each and read its
       current listings for relevant roles:
 {sources}
-   b. ALSO use WebSearch for the user's target roles + preferred locations from
+   c. ALSO use WebSearch for the user's target roles + preferred locations from
       goals.md, working DOWN the priority order that file gives. Run at most 6
       searches TOTAL: at least 4 on the top-priority targets, no more than 2 on
       lower/stretch tiers. Do not search every role variant — pick the queries
@@ -86,13 +95,20 @@ exactly: []
 """
 
 
-def build_prompt(seen_labels: list) -> str:
+def build_prompt(seen_labels: list, prefetched: list | None = None) -> str:
     seen = "\n".join(f"- {s}" for s in seen_labels) if seen_labels else "  (none yet)"
     sources = ("\n".join(f"      - {u}" for u in config.SCAN_SOURCES)
                if config.SCAN_SOURCES else "      (none configured)")
+    block = jobstreet.as_prompt_block(prefetched or [])
+    listings = _indent(block, 6) if block else "      (none — JobStreet returned nothing)"
     # Read the cap at call time so tests/config changes take effect without reload.
-    return SCAN_PROMPT.format(seen=seen, sources=sources,
+    return SCAN_PROMPT.format(seen=seen, sources=sources, prefetched=listings,
                               max_matches=config.MAX_MATCHES_PER_SCAN)
+
+
+def _indent(text: str, spaces: int) -> str:
+    pad = " " * spaces
+    return "\n".join(pad + ln if ln else ln for ln in text.splitlines())
 
 
 def _extract_array(text: str):
@@ -159,9 +175,19 @@ class ScanError(RuntimeError):
     """A scan failed after a retry (agent error or unparseable output)."""
 
 
+async def _prefetch() -> list:
+    """Pull JobStreet listings before the agent runs. Never raises."""
+    if not config.JOBSTREET_QUERIES:
+        return []
+    return await jobstreet.search_many(config.JOBSTREET_QUERIES,
+                                       where=config.JOBSTREET_LOCATION,
+                                       limit=config.JOBSTREET_LIMIT)
+
+
 async def _ask_agent() -> str:
     seen_labels = jobs_store.recent_labels()
-    prompt = build_prompt(seen_labels)
+    prefetched = await _prefetch()
+    prompt = build_prompt(seen_labels, prefetched)
     reply, _ = await agent.run_turn(prompt, session_id=None, model=config.model_for("scan"))
     return reply
 

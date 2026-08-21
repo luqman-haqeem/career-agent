@@ -148,5 +148,25 @@ OWNER_CHAT_ID = int(os.getenv("OWNER_CHAT_ID", "0"))
 _scan_sources = os.getenv("SCAN_SOURCES", "https://jobs.developerkaki.my/").strip()
 SCAN_SOURCES = [s.strip() for s in _scan_sources.split(",") if s.strip()]
 
+# --- JobStreet provider ----------------------------------------------------
+# JobStreet's job pages return 403 to every non-browser request, so the agent
+# cannot WebFetch them and cannot confirm a posting is live — which under the
+# scan's own rules means the whole board goes unseen. Its public search API is
+# open, so the scan pulls structured listings from there before the agent runs
+# and hands them over pre-fetched, for no model tokens.
+#
+# Keyword queries to run each scan (comma-separated). Keep the list short —
+# every listing is prompt weight.
+_js_queries = os.getenv(
+    "JOBSTREET_QUERIES",
+    "python developer,backend developer,software engineer").strip()
+JOBSTREET_QUERIES = [q.strip() for q in _js_queries.split(",") if q.strip()]
+
+JOBSTREET_LOCATION = os.getenv("JOBSTREET_LOCATION", "Kuala Lumpur").strip()
+
+# Listings per query. The scan shows the user MAX_MATCHES_PER_SCAN at most, so
+# this only needs to be wide enough to give the agent a real choice.
+JOBSTREET_LIMIT = int(os.getenv("JOBSTREET_LIMIT", "15"))
+
 # Where seen/decided jobs are persisted (dedup is authoritative here).
 JOBS_STORE = BASE_DIR / "data" / "jobs_seen.json"
