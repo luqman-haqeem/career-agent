@@ -189,6 +189,31 @@ def _allowed(update: Update) -> bool:
                 and update.effective_user.id in config.ALLOWED_USER_IDS)
 
 
+# Anything that looks like a credential, redacted before an error goes out over
+# Telegram. The chat is the operator's own diagnostic channel — surfacing the
+# real failure is the whole point of raising instead of returning a placeholder
+# — but an error string is attacker-influenced (it can carry provider response
+# bodies and opencode stderr), so it must never be able to smuggle a key out.
+_SECRET_PATTERNS = [
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"),                     # OpenAI/OpenRouter keys
+    re.compile(r"\b\d{8,10}:[A-Za-z0-9_\-]{30,}"),               # Telegram bot token
+    re.compile(r"\bBearer\s+[A-Za-z0-9._\-]{16,}", re.I),        # Authorization headers
+    re.compile(r"(?i)\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD))\b\s*[=:]\s*\S+"),
+]
+_MAX_ERROR_CHARS = 400
+
+
+def _safe_error(e) -> str:
+    """Render an exception for the user: credentials scrubbed, length bounded."""
+    text = str(e).strip() or e.__class__.__name__
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub(lambda m: (m.group(1) + "=<redacted>") if m.groups() else "<redacted>",
+                       text)
+    if len(text) > _MAX_ERROR_CHARS:
+        text = text[:_MAX_ERROR_CHARS] + "… (truncated — full detail in the logs)"
+    return text
+
+
 def _message_id(sent):
     """Message id of a python-telegram-bot send result, or None.
 
@@ -470,7 +495,7 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
                 retry_prefix=_retry_prefix(chat_id, thread))
         except Exception as e:  # noqa: BLE001
             log.exception("turn failed")
-            sent = await update.message.reply_text(f"⚠️ Something went wrong: {e}")
+            sent = await update.message.reply_text(f"⚠️ Something went wrong: {_safe_error(e)}")
             if thread != threads.MAIN:
                 threads.bind_message(chat_id, _message_id(sent), thread)
             return
@@ -804,7 +829,7 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
             threads.forget(chat_id, thread)  # nothing happened in it; don't leave a stub
             await ctx.bot.send_message(
                 chat_id,
-                f"⚠️ Couldn't build the resume: {e}\n\n"
+                f"⚠️ Couldn't build the resume: {_safe_error(e)}\n\n"
                 f"You can still apply — send me the job link and I'll tailor one.")
             return
         finally:
@@ -904,7 +929,7 @@ async def _generate_resume_in_thread(ctx: ContextTypes.DEFAULT_TYPE, chat_id: in
                 retry_prefix=_retry_prefix(chat_id, thread))
         except Exception as e:  # noqa: BLE001
             log.exception("in-thread resume generation failed")
-            await ctx.bot.send_message(chat_id, f"⚠️ Couldn't build the resume: {e}")
+            await ctx.bot.send_message(chat_id, f"⚠️ Couldn't build the resume: {_safe_error(e)}")
             return
         finally:
             typing.cancel()
@@ -962,7 +987,7 @@ async def _on_critique_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
             save_session_id(chat_id, session_id, thread)
     except Exception as e:  # noqa: BLE001
         log.exception("critique failed")
-        await ctx.bot.send_message(chat_id, f"⚠️ Couldn't run the critique: {e}")
+        await ctx.bot.send_message(chat_id, f"⚠️ Couldn't run the critique: {_safe_error(e)}")
         return
     finally:
         typing.cancel()
@@ -984,7 +1009,7 @@ async def _do_scan(bot, chat_id: int, manual: bool) -> None:
     except scan.ScanError as e:
         log.warning("scan failed: %s", e)
         if manual:
-            await bot.send_message(chat_id, f"⚠️ Scan failed — {e}. Try again later.")
+            await bot.send_message(chat_id, f"⚠️ Scan failed — {_safe_error(e)}. Try again later.")
         return
     if not matches:
         if manual or not config.SILENT_WHEN_EMPTY:
@@ -1024,7 +1049,7 @@ async def scan_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await _do_scan(ctx.bot, update.effective_chat.id, manual=True)
     except Exception as e:  # noqa: BLE001
         log.exception("scan_cmd failed")
-        await update.message.reply_text(f"⚠️ Scan error — {e}. Try again later.")
+        await update.message.reply_text(f"⚠️ Scan error — {_safe_error(e)}. Try again later.")
 
 
 def _safe_name(name: str) -> str:
@@ -1175,7 +1200,7 @@ async def on_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await tg_file.download_to_drive(str(dest))
     except Exception as e:  # noqa: BLE001
         await update.message.reply_text(
-            f"⚠️ Couldn't download that file ({e}). Telegram caps bot downloads "
+            f"⚠️ Couldn't download that file ({_safe_error(e)}). Telegram caps bot downloads "
             "at ~20 MB — try a smaller file or paste the text.")
         return
 
@@ -1248,7 +1273,7 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         tg_file = await ctx.bot.get_file(photo.file_id)
         await tg_file.download_to_drive(str(dest))
     except Exception as e:  # noqa: BLE001
-        await update.message.reply_text(f"⚠️ Couldn't download that image ({e}).")
+        await update.message.reply_text(f"⚠️ Couldn't download that image ({_safe_error(e)}).")
         return
 
     note = f" The user added this note: {caption!r}." if caption else ""
