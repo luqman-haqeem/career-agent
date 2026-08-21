@@ -46,6 +46,24 @@ OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", "openrouter/google/gemini-2.5-flash
 # of a real discovery scan, which fetches many job pages.
 OPENCODE_TIMEOUT = int(os.getenv("OPENCODE_TIMEOUT", "1800"))
 
+# --- Concurrency -----------------------------------------------------------
+# How many opencode runs may be in flight at once.
+#
+# Measured on this box (2 cores, ~920 MB free) on 2026-08-21, not guessed:
+# one run takes 6s; two concurrent take 7-10s and were clean over six trials;
+# three concurrent drive MemAvailable to 13 MB, hold ~1030 MB of RSS between
+# them, and get reaped after ~20s with zero bytes of output. The run that
+# started FIRST dies too, so an extra request does not queue behind the others
+# — it destroys them. Hence a hard gate rather than best-effort backpressure.
+#
+# Raise this only after adding RAM.
+MAX_CONCURRENT_RUNS = int(os.getenv("MAX_CONCURRENT_RUNS", "2"))
+
+# How many Telegram updates the bot handles at once. Kept above
+# MAX_CONCURRENT_RUNS so light traffic (button taps, /threads, /main) stays
+# responsive while the heavy agent turns queue on the semaphore.
+MAX_CONCURRENT_UPDATES = int(os.getenv("MAX_CONCURRENT_UPDATES", "4"))
+
 # --- Per-task model overrides ----------------------------------------------
 # Each falls back to OPENCODE_MODEL when unset (so leaving them blank keeps
 # today's single-model behavior). SCAN_MODEL / RESUME_MODEL drive the dedicated

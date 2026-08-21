@@ -7,10 +7,13 @@ Contract:
     run_turn(user_message, session_id=None, files=None, model=None) -> (reply_text, session_id)
 """
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import signal
+import time
+import weakref
 
 import config
 
@@ -18,6 +21,47 @@ log = logging.getLogger("career-agent.agent")
 
 # Grace period between TERM and KILL when reaping a timed-out run.
 _KILL_GRACE = 5
+
+# --- Concurrency gate ------------------------------------------------------
+# Three simultaneous opencode runs exhaust this box's memory and all three get
+# reaped, including the one that started first (see config.MAX_CONCURRENT_RUNS
+# for the measurements). Every code path — chat turn, scan, resume button,
+# critique — reaches opencode through _opencode_invoke, so gating there is
+# enough; there is no second door.
+_slots: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _run_slots() -> asyncio.Semaphore:
+    """The gate for the running loop.
+
+    A process has one loop for its lifetime, but tests spin up a throwaway loop
+    per asyncio.run(), so the semaphore is cached per loop rather than created
+    at import.
+    """
+    loop = asyncio.get_running_loop()
+    sem = _slots.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(max(1, config.MAX_CONCURRENT_RUNS))
+        _slots[loop] = sem
+    return sem
+
+
+@contextlib.asynccontextmanager
+async def _run_slot():
+    """Hold one of the run slots for the duration of the block.
+
+    Waiting here is deliberately unbounded: a queued turn answers late, and
+    late is the whole point — the alternative killed runs outright.
+    """
+    sem = _run_slots()
+    queued = sem.locked()
+    started = time.monotonic()
+    async with sem:
+        if queued:
+            log.info("opencode was at capacity (%d runs); waited %.1fs for a slot.",
+                     config.MAX_CONCURRENT_RUNS, time.monotonic() - started)
+        yield
+
 
 # --- opencode backend ------------------------------------------------------
 def _opencode_build_args(user_message: str, session_id: str | None, files, model=None) -> list:
@@ -62,6 +106,11 @@ async def _kill_run(proc) -> None:
 
 
 async def _opencode_invoke(user_message: str, session_id: str | None, files, model=None):
+    async with _run_slot():
+        return await _opencode_spawn(user_message, session_id, files, model)
+
+
+async def _opencode_spawn(user_message: str, session_id: str | None, files, model=None):
     proc = await asyncio.create_subprocess_exec(
         *_opencode_build_args(user_message, session_id, files, model),
         cwd=str(config.BASE_DIR),

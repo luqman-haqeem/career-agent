@@ -1317,6 +1317,11 @@ def main() -> None:
     app = (Application.builder()
            .token(config.TELEGRAM_BOT_TOKEN)
            .post_init(_set_commands)
+           # Default is 1 — every update, however trivial, waited behind the
+           # job thread ahead of it. Agent turns are still capped at
+           # MAX_CONCURRENT_RUNS by the semaphore in agent.py; this only lets
+           # button taps and /threads answer while a resume is being written.
+           .concurrent_updates(config.MAX_CONCURRENT_UPDATES)
            .build())
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
