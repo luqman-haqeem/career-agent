@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
                       ReplyParameters, Update)
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
@@ -35,8 +36,64 @@ IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 # Only these get sent back to the user as generated documents.
 SEND_BACK_EXT = {".md", ".pdf", ".docx", ".txt"}
 
+_SECRET_PATTERNS = [
+    re.compile(r"/bot\d{6,12}:[A-Za-z0-9_\-]{20,}"),             # token in a URL path
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"),                     # OpenAI/OpenRouter keys
+    re.compile(r"\b\d{8,10}:[A-Za-z0-9_\-]{30,}"),               # Telegram bot token
+    re.compile(r"\bBearer\s+[A-Za-z0-9._\-]{16,}", re.I),        # Authorization headers
+    re.compile(r"(?i)\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD))\b\s*[=:]\s*\S+"),
+]
+
+
+def _scrub(text: str) -> str:
+    """Replace anything that looks like a credential with <redacted>."""
+    for pat in _SECRET_PATTERNS:
+        if pat.pattern.startswith("/bot"):
+            text = pat.sub("/bot<redacted>", text)
+        else:
+            text = pat.sub(
+                lambda m: (m.group(1) + "=<redacted>") if m.groups() else "<redacted>",
+                text)
+    return text
+
+
+class _RedactingFilter(logging.Filter):
+    """Keep credentials out of the logs.
+
+    httpx logs every request URL at INFO, and the Telegram bot token lives in
+    the URL PATH ("/bot<token>/sendMessage"), so the token was printed on every
+    single API call — a `docker logs` away from anyone with shell access. The
+    plain token pattern does not catch it there: "bot" and the leading digit
+    are both word characters, so there is no \\b for it to anchor on. Hence the
+    dedicated /bot… pattern above.
+
+    The URL arrives as a %s ARGUMENT, and not as a string either — httpx logs
+    an httpx.URL object. A first cut scrubbed record.msg plus any str args and
+    still leaked the token in production, because the URL is neither. So render
+    the message the way the handler will and scrub THAT: it catches a secret
+    wherever it hides and whatever type carries it.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 — a bad format string is not our problem
+            return True
+        scrubbed = _scrub(message)
+        if scrubbed != message:
+            # Args are folded into the rendered text, so they must be cleared
+            # or the handler would try to interpolate a second time.
+            record.msg, record.args = scrubbed, ()
+        return True
+
+
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
+# On the handlers, not the root logger: a Filter on a logger is not consulted
+# for records that propagate up from child loggers, so an httpx record would
+# have sailed straight past it.
+for _h in logging.getLogger().handlers:
+    _h.addFilter(_RedactingFilter())
 log = logging.getLogger("career-agent")
 
 _STATIC_INTRO = (
@@ -194,21 +251,12 @@ def _allowed(update: Update) -> bool:
 # real failure is the whole point of raising instead of returning a placeholder
 # — but an error string is attacker-influenced (it can carry provider response
 # bodies and opencode stderr), so it must never be able to smuggle a key out.
-_SECRET_PATTERNS = [
-    re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"),                     # OpenAI/OpenRouter keys
-    re.compile(r"\b\d{8,10}:[A-Za-z0-9_\-]{30,}"),               # Telegram bot token
-    re.compile(r"\bBearer\s+[A-Za-z0-9._\-]{16,}", re.I),        # Authorization headers
-    re.compile(r"(?i)\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD))\b\s*[=:]\s*\S+"),
-]
 _MAX_ERROR_CHARS = 400
 
 
 def _safe_error(e) -> str:
     """Render an exception for the user: credentials scrubbed, length bounded."""
-    text = str(e).strip() or e.__class__.__name__
-    for pat in _SECRET_PATTERNS:
-        text = pat.sub(lambda m: (m.group(1) + "=<redacted>") if m.groups() else "<redacted>",
-                       text)
+    text = _scrub(str(e).strip() or e.__class__.__name__)
     if len(text) > _MAX_ERROR_CHARS:
         text = text[:_MAX_ERROR_CHARS] + "… (truncated — full detail in the logs)"
     return text
@@ -1293,6 +1341,45 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                          thread=_route_thread(update, allow_new=False)[0])
 
 
+# Telegram's own transport wobbling (502s, read timeouts) during polling. These
+# arrive with no update attached, mean nothing to the user, and were filling the
+# log with full tracebacks — nine in three days.
+_TRANSPORT_HICCUPS = (NetworkError, TimedOut)
+
+
+async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Last line of defence for anything a handler lets escape.
+
+    Without this registered, python-telegram-bot logged the traceback to stdout
+    and stopped there: the user sat looking at a chat where their message simply
+    never got an answer. Same silent-failure shape as the dropped scan and the
+    "(no response)" placeholder — the bot knew something had gone wrong and told
+    nobody who cared.
+    """
+    e = ctx.error
+    # Duck-typed rather than isinstance(update, Update): a non-Update simply
+    # has no effective_chat, and the last thing this path should do is add an
+    # assumption that can drop the very message it exists to deliver.
+    chat = getattr(update, "effective_chat", None)
+
+    if isinstance(e, _TRANSPORT_HICCUPS) and chat is None:
+        # Polling hiccup with nobody waiting on it. One line, no traceback.
+        log.warning("Telegram transport: %s", _safe_error(e))
+        return
+
+    log.error("Unhandled error while processing %s",
+              type(update).__name__, exc_info=e)
+    if chat is None:
+        return
+    try:
+        await ctx.bot.send_message(
+            chat_id=chat.id,
+            text=f"⚠️ Something broke on my side: {_safe_error(e)}\n\n"
+                 "Your message wasn't processed — try again, or /reset if it keeps happening.")
+    except Exception:  # noqa: BLE001 — the notification failing must not recurse
+        log.exception("Could not tell the user about the error above.")
+
+
 def main() -> None:
     if not config.TELEGRAM_BOT_TOKEN:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env (get it from @BotFather).")
@@ -1335,6 +1422,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.add_handler(CommandHandler("scan", scan_cmd))
+    app.add_error_handler(on_error)
 
     if config.JOB_DISCOVERY_ENABLED:
         if app.job_queue is None:
