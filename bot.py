@@ -766,13 +766,23 @@ def _job_card_html(job: dict) -> str:
     return "\n".join(lines)
 
 
-async def _send_job_card(bot, chat_id: int, job: dict) -> None:
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📄 Apply", callback_data=f"job:apply:{job['id']}"),
-        InlineKeyboardButton("⏭ Skip", callback_data=f"job:skip:{job['id']}"),
+def _job_card_keyboard(jid: str, drafted: bool = False) -> InlineKeyboardMarkup:
+    """Buttons under a scan result. Same callbacks either way — a tap is still
+    the decision that gets learned from; only the promise changes."""
+    apply_label = "📄 Get resume (ready)" if drafted else "📄 Apply"
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(apply_label, callback_data=f"job:apply:{jid}"),
+        InlineKeyboardButton("⏭ Skip", callback_data=f"job:skip:{jid}"),
     ]])
-    await bot.send_message(
-        chat_id, _job_card_html(job), parse_mode="HTML", reply_markup=kb)
+
+
+async def _send_job_card(bot, chat_id: int, job: dict) -> int:
+    """Send one match's card. Returns its message id so the Apply button can be
+    relabelled later if a resume gets drafted for it."""
+    sent = await bot.send_message(
+        chat_id, _job_card_html(job), parse_mode="HTML",
+        reply_markup=_job_card_keyboard(job["id"]))
+    return _message_id(sent)
 
 
 async def _on_job_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: str) -> None:
@@ -834,6 +844,10 @@ async def _on_job_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: s
             pass
         _in_flight_applies.add(jid)
         try:
+            # A scan may already have built this one; delivering it costs a
+            # second instead of a minute.
+            if await _deliver_stored_draft(ctx, update.effective_chat.id, job, jid):
+                return
             await _generate_resume_for(ctx, update.effective_chat.id, job, jid)
         finally:
             _in_flight_applies.discard(jid)
@@ -842,7 +856,18 @@ async def _on_job_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE, data: s
     await query.answer()  # unknown action — dismiss the spinner
 
 
-async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job: dict, jid: str) -> None:
+async def _draft_resume(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job: dict,
+                        jid: str, announce: bool = True) -> dict:
+    """Build the resume and stop there.
+
+    Records NO decision and sends NO document — the caller decides what those
+    mean. That split exists because jobs_store.decisions() is the input to
+    preferences.run_synthesis(): a resume drafted on the user's behalf is not a
+    choice they made, and folding it in would have the scanner training on its
+    own output.
+
+    Returns {"thread", "note", "file"}; raises if the turn fails.
+    """
     # Its own thread: tapping Apply on three scan results gives three separate
     # conversations, so "make it shorter" is never ambiguous.
     label = threads.format_label(job.get("title"), job.get("company"))
@@ -860,39 +885,140 @@ async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job
         "resumes/ as usual so the PDF is generated, then briefly tell me what you "
         "emphasized and any real gaps.\n\n" + RESUME_MARKER_INSTRUCTION
     )
-    sent = await ctx.bot.send_message(
-        chat_id,
-        f"📄 Tailoring your resume for {job.get('title')} @ {job.get('company')} — about a minute…")
-    threads.bind_message(chat_id, _message_id(sent), thread)
+    sent = None
+    if announce:
+        sent = await ctx.bot.send_message(
+            chat_id,
+            f"📄 Tailoring your resume for {job.get('title')} @ {job.get('company')} — about a minute…")
+        threads.bind_message(chat_id, _message_id(sent), thread)
 
     async with _lock_for(chat_id, thread):
         session_id = load_session_id(chat_id, thread)
         before = _resume_snapshot()
-        typing = asyncio.create_task(_keep_typing(ctx.bot, chat_id))
+        typing = (asyncio.create_task(_keep_typing(ctx.bot, chat_id))
+                  if announce else None)
         try:
             text, session_id = await run_turn(prompt, session_id,
                                               model=config.model_for("resume"))
-        except Exception as e:  # noqa: BLE001
-            log.exception("resume generation failed")
+        except Exception:
             threads.forget(chat_id, thread)  # nothing happened in it; don't leave a stub
-            await ctx.bot.send_message(
-                chat_id,
-                f"⚠️ Couldn't build the resume: {_safe_error(e)}\n\n"
-                f"You can still apply — send me the job link and I'll tailor one.")
-            return
+            raise
         finally:
-            typing.cancel()
+            if typing is not None:
+                typing.cancel()
 
         save_session_id(chat_id, session_id, thread)
         threads.touch(chat_id, thread)
 
-    jobs_store.set_decision(jid, "applied")
     text, claimed = strip_resume_marker(text)
     text, _job_label = strip_job_marker(text)   # already named from the job card
-    await _send_chat(ctx.bot, chat_id, text, thread,
-                     reply_to=_message_id(sent))   # quote the "Tailoring…" notice
-    await _deliver_changed_resumes(ctx.bot, chat_id, before, thread, claimed,
-                                   reply_to=_message_id(sent))
+    return {"thread": thread, "note": text, "file": claimed,
+            "before": before, "notice_id": _message_id(sent)}
+
+
+async def _generate_resume_for(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int,
+                               job: dict, jid: str) -> None:
+    """The Apply button: draft it, record the decision, send it."""
+    try:
+        draft = await _draft_resume(ctx, chat_id, job, jid)
+    except Exception as e:  # noqa: BLE001
+        log.exception("resume generation failed")
+        await ctx.bot.send_message(
+            chat_id,
+            f"⚠️ Couldn't build the resume: {_safe_error(e)}\n\n"
+            f"You can still apply — send me the job link and I'll tailor one.")
+        return
+
+    jobs_store.set_decision(jid, "applied")
+    await _send_chat(ctx.bot, chat_id, draft["note"], draft["thread"],
+                     reply_to=draft["notice_id"])   # quote the "Tailoring…" notice
+    await _deliver_changed_resumes(ctx.bot, chat_id, draft["before"],
+                                   draft["thread"], draft["file"],
+                                   reply_to=draft["notice_id"])
+
+
+async def _deliver_stored_draft(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int,
+                                job: dict, jid: str) -> bool:
+    """Send a resume a scan drafted earlier. False if there isn't a usable one.
+
+    Returning False rather than raising is what lets the caller fall through to
+    generating one: a draft is an optimisation, and a missing file must never
+    be worse than not having drafted at all.
+    """
+    name = (job or {}).get("resume_file")
+    if not name:
+        return False
+    path = config.RESUMES_DIR / name
+    if not path.exists():
+        # The user cleaned out resumes/ between the scan and the tap.
+        log.info("Stored draft %s for %s is gone; regenerating.", name, jid)
+        jobs_store.clear_draft(jid)
+        return False
+
+    thread = job.get("resume_thread") or threads.MAIN
+    # The tap IS a real decision, unlike the drafting that preceded it.
+    jobs_store.set_decision(jid, "applied")
+    note = job.get("resume_note") or "Here's the resume I drafted for this one."
+    await _send_chat(ctx.bot, chat_id, note, thread)
+    # Through the normal delivery path, not a bare send: that is what renders
+    # the JSON to a PDF and attaches the Critique-it button. `claimed` forces
+    # this one file out even though its mtime has not moved since the scan.
+    await _deliver_changed_resumes(ctx.bot, chat_id, _resume_snapshot(),
+                                   thread, claimed=name)
+    return True
+
+
+async def _auto_draft_top(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int,
+                          matches: list, card_ids: dict) -> None:
+    """Pre-build a resume for the best match of this scan.
+
+    Only the top one: each draft is a full model run, and the rest are far more
+    likely to go unread. Everything here is best-effort — a failure leaves the
+    cards exactly as they were, and the user never learns it was attempted.
+    """
+    if not config.AUTO_DRAFT_TOP_MATCH or not matches:
+        return
+    job = max(matches, key=lambda m: m.get("fit_score") or 0)
+    jid = job["id"]
+    if jid in _in_flight_applies:   # they tapped Apply before we got here
+        return
+
+    _in_flight_applies.add(jid)
+    try:
+        draft = await _draft_resume(ctx, chat_id, job, jid, announce=False)
+    except Exception:  # noqa: BLE001 — a background nicety must not break a scan
+        log.warning("auto-draft failed for %s (%s)", jid, job.get("title"),
+                    exc_info=True)
+        return
+    finally:
+        _in_flight_applies.discard(jid)
+
+    name = draft.get("file") or _newest_resume_since(draft.get("before") or {})
+    if not name:
+        log.warning("auto-draft for %s produced no resume file.", jid)
+        return
+
+    jobs_store.set_draft(jid, name, draft["thread"], draft["note"])
+    log.info("auto-drafted %s for %s — %s", name, jid, job.get("title"))
+
+    message_id = card_ids.get(jid)
+    if not message_id:
+        return
+    try:
+        await ctx.bot.edit_message_reply_markup(
+            chat_id=chat_id, message_id=message_id,
+            reply_markup=_job_card_keyboard(jid, drafted=True))
+    except Exception:  # noqa: BLE001 — an un-relabelled button still works
+        log.info("Could not relabel the card for %s.", jid, exc_info=True)
+
+
+def _newest_resume_since(before: dict) -> str:
+    """Newest new/changed file in resumes/, for when the agent skipped its marker."""
+    after = _resume_snapshot()
+    changed = [n for n, m in after.items() if before.get(n) != m and n.endswith(".json")]
+    if not changed:
+        return ""
+    return max(changed, key=lambda n: after[n])
 
 
 async def _on_thread_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
@@ -1044,6 +1170,17 @@ async def _on_critique_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
                      reply_to=_message_id(getattr(query, "message", None)))
 
 
+class _BotCtx:
+    """Minimal stand-in for a handler context.
+
+    _do_scan is handed a raw Bot (the scheduler has no update to build a real
+    context from), but the resume path only ever reaches for ctx.bot.
+    """
+
+    def __init__(self, bot):
+        self.bot = bot
+
+
 async def _do_scan(bot, chat_id: int, manual: bool) -> None:
     try:
         note = await preferences.run_synthesis()
@@ -1064,8 +1201,13 @@ async def _do_scan(bot, chat_id: int, manual: bool) -> None:
             await bot.send_message(chat_id, "🔍 No new strong matches this time.")
         return
     await bot.send_message(chat_id, f"🔍 Found {len(matches)} new match(es):")
+    card_ids = {}
     for job in matches:
-        await _send_job_card(bot, chat_id, job)
+        card_ids[job["id"]] = await _send_job_card(bot, chat_id, job)
+
+    # The cards are out; the user has what they came for. Drafting the best
+    # one's resume now happens behind them.
+    await _auto_draft_top(_BotCtx(bot), chat_id, matches, card_ids)
 
 
 def _owner_chat_id() -> int:

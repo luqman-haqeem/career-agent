@@ -99,6 +99,38 @@ def set_decision(jid: str, state: str, reason: str = None) -> None:
     _save(data)
 
 
+def set_draft(jid: str, filename: str, thread: str, note: str) -> None:
+    """Attach a pre-built resume to a job. Deliberately NOT a decision.
+
+    decisions() feeds preferences.run_synthesis(), which rewrites
+    memory/preferences.md, which re-ranks the next scan. A resume drafted on
+    the user's behalf is not a choice they made, so this leaves "state" alone —
+    otherwise the scanner would end up learning from its own output.
+
+    Silent no-op if jid is unknown.
+    """
+    data = _load()
+    entry = data["jobs"].get(jid)
+    if not entry:
+        return
+    entry["resume_file"] = filename
+    entry["resume_thread"] = thread
+    entry["resume_note"] = note
+    entry["drafted_at"] = _now_iso()
+    _save(data)
+
+
+def clear_draft(jid: str) -> None:
+    """Drop a stored draft — its file went missing, so stop advertising it."""
+    data = _load()
+    entry = data["jobs"].get(jid)
+    if not entry:
+        return
+    for k in ("resume_file", "resume_thread", "resume_note", "drafted_at"):
+        entry.pop(k, None)
+    _save(data)
+
+
 def set_state(jid: str, state: str) -> None:
     """Back-compat shim: set state with no reason."""
     set_decision(jid, state)

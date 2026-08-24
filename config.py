@@ -168,5 +168,11 @@ JOBSTREET_LOCATION = os.getenv("JOBSTREET_LOCATION", "Kuala Lumpur").strip()
 # this only needs to be wide enough to give the agent a real choice.
 JOBSTREET_LIMIT = int(os.getenv("JOBSTREET_LIMIT", "15"))
 
+# Draft a tailored resume for the single highest-scoring match of each scan,
+# before the user asks, so the "Apply" button answers instantly instead of
+# making them wait a minute. Costs one model call per scan whether or not the
+# button is ever tapped — that is the trade. Only the top match, never the rest.
+AUTO_DRAFT_TOP_MATCH = os.getenv("AUTO_DRAFT_TOP_MATCH", "true").strip().lower() != "false"
+
 # Where seen/decided jobs are persisted (dedup is authoritative here).
 JOBS_STORE = BASE_DIR / "data" / "jobs_seen.json"
