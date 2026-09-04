@@ -73,6 +73,22 @@
 <% endfor %>
 <% endif %>
 
+<% if certificates %>
+\section{Certifications}
+<% for c in certificates %>
+<# \hfill only pushes to the right margin on a line ended by \\, so the
+   date goes inline when there is no second line to end. #>
+<% if c.detail %>
+{\bfseries << c.name|tex >>}<% if c.date %>\hfill\daterange{<< c.date|tex >>}<% endif %>\\
+{\small << c.detail|tex >>}
+<% else %>
+{\bfseries << c.name|tex >>}<% if c.date %> \daterange{(<< c.date|tex >>)}<% endif %>
+<% endif %>
+\smallskip
+
+<% endfor %>
+<% endif %>
+
 <% if skills %>
 \section{Skills}
 <% for s in skills %>{\bfseries << s.name|tex >>:} << s.keywords|tex >>\\[2pt]

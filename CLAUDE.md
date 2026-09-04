@@ -153,9 +153,16 @@ real data for — omit the rest, never fill with placeholders or invented values
   "education": [{"institution": "", "studyType": "(e.g. BSc, Diploma)",
                  "area": "", "startDate": "YYYY", "endDate": "YYYY",
                  "score": "(optional)"}],
+  "certificates": [{"name": "(e.g. Professional Scrum Master I (PSM I))",
+                    "issuer": "(e.g. Scrum.org)", "date": "YYYY",
+                    "url": "(optional credential link)"}],
   "skills": [{"name": "(category, e.g. Backend)", "keywords": ["...", "..."]}]
 }
 ```
+
+Include `certificates` whenever the user has one stored under "Education &
+certifications" in `memory/profile.md` — it renders as its own Certifications
+section. Same rule as everything else: only certifications actually in memory.
 
 Write ONLY this one `.json` file to `resumes/`. Do NOT write markdown, scripts,
 PDF-conversion code, or any scratch files there — the bot handles PDF rendering.

@@ -108,6 +108,15 @@ def _normalize(data: dict) -> dict:
         "dates": _dates(e.get("startDate"), e.get("endDate")),
     } for e in (data.get("education") or [])]
 
+    # A cert with no name is nothing to print. "detail" is the second line —
+    # the template needs it to be either present or absent as a whole, so the
+    # issuer/URL join happens here rather than in LaTeX.
+    certificates = [{
+        "name": c.get("name") or "",
+        "date": c.get("date") or "",
+        "detail": " — ".join(x for x in (c.get("issuer"), c.get("url")) if x),
+    } for c in (data.get("certificates") or []) if c.get("name")]
+
     skills = [{
         "name": s.get("name") or "",
         "keywords": ", ".join(s.get("keywords") or []),
@@ -119,7 +128,8 @@ def _normalize(data: dict) -> dict:
         "contact": " | ".join(contact),
         "summary": b.get("summary") or "",
         "work": work, "projects": projects,
-        "education": education, "skills": skills,
+        "education": education, "certificates": certificates,
+        "skills": skills,
     }
 
 
@@ -166,6 +176,11 @@ def _selftest() -> None:
         "education": [{"institution": "Example University", "studyType": "BSc",
                        "area": "Computer Science", "startDate": "2014",
                        "endDate": "2018"}],
+        # Two shapes on purpose: one with an issuer (two-line layout) and one
+        # bare (inline date) — the template takes a different branch for each.
+        "certificates": [{"name": "Professional Scrum Master I", "date": "2024",
+                          "issuer": "Scrum.org"},
+                         {"name": "AWS Certified Developer -- Associate"}],
         "skills": [{"name": "Languages", "keywords": ["Python", "SQL", "Scala"]},
                    {"name": "Cloud", "keywords": ["AWS", "Snowflake"]}],
     }
