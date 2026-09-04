@@ -17,8 +17,13 @@ import bot
 
 # Structurally valid but fabricated — never paste a real token here. This file
 # once held the live one, which then shipped to a public repo.
-TOKEN_URL = ("https://api.telegram.org/"
-             "bot1234567890:AAHfakefakefakefakefakefakefakefake12/sendMessage")
+#
+# Assert against TOKEN_SECRET, never a hardcoded fragment: the fragment these
+# tests used was left over from an older fixture, so once the fixture changed
+# every "not in out" check passed vacuously and stopped testing redaction.
+TOKEN_ID = "1234567890"
+TOKEN_SECRET = "AAHfakefakefakefakefakefakefakefake12"
+TOKEN_URL = f"https://api.telegram.org/bot{TOKEN_ID}:{TOKEN_SECRET}/sendMessage"
 
 
 # --- log redaction ---------------------------------------------------------
@@ -40,17 +45,17 @@ def test_the_token_is_redacted_when_it_is_a_log_argument():
     """httpx passes the URL as %s, so scrubbing record.msg alone missed it."""
     out = _emit('HTTP Request: %s %s "%s %d %s"', "POST", TOKEN_URL,
                 "HTTP/1.1", 200, "OK")
-    assert "AAHw45" not in out
+    assert TOKEN_SECRET not in out
     assert "/bot<redacted>/sendMessage" in out
 
 
 def test_the_token_is_redacted_inside_the_format_string_too():
-    assert "AAHw45" not in _emit("calling " + TOKEN_URL)
+    assert TOKEN_SECRET not in _emit("calling " + TOKEN_URL)
 
 
 def test_dict_style_args_are_redacted():
     out = _emit("%(url)s failed", {"url": TOKEN_URL})
-    assert "AAHw45" not in out
+    assert TOKEN_SECRET not in out
 
 
 class _UrlObject:
@@ -69,7 +74,7 @@ def test_the_token_is_redacted_when_the_url_is_not_a_string():
     """
     out = _emit('HTTP Request: %s %s "%s %d %s"', "POST", _UrlObject(),
                 "HTTP/1.1", 200, "OK")
-    assert "AAHw45" not in out
+    assert TOKEN_SECRET not in out
     assert "/bot<redacted>/sendMessage" in out
 
 
@@ -77,7 +82,7 @@ def test_a_numeric_arg_still_renders_after_redaction():
     """Scrubbing folds args into the message — %d must not break."""
     out = _emit("%s took %d ms", _UrlObject(), 42)
     assert "took 42 ms" in out
-    assert "AAHw45" not in out
+    assert TOKEN_SECRET not in out
 
 
 def test_a_bad_format_string_does_not_crash_the_filter():
@@ -159,7 +164,7 @@ def test_a_crash_during_a_chat_tells_the_user():
 def test_the_message_to_the_user_is_scrubbed():
     ctx = _Ctx(RuntimeError(f"POST {TOKEN_URL} failed"))
     asyncio.run(bot.on_error(_Update(), ctx))
-    assert "AAHw45" not in ctx.bot.sent[0][1]
+    assert TOKEN_SECRET not in ctx.bot.sent[0][1]
 
 
 def test_a_polling_hiccup_with_no_chat_does_not_message_anyone(caplog):
