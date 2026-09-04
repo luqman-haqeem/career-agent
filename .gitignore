@@ -16,6 +16,13 @@ memory/profile.md
 memory/goals.md
 # Private corrections log (the .example template is shipped instead).
 memory/corrections.md
+# Learned Apply/Skip preferences — names real employers, locations and pay.
+# Same deal: the .example template is shipped instead.
+memory/preferences.md
+
+# Backups the tooling drops next to a file it is about to rewrite.
+*.pre-rollback
+*.pre-merge
 # Ignore the private contents but keep the folder structure (.gitkeep) so a
 # fresh clone has the expected layout.
 memory/experiences/*
