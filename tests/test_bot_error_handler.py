@@ -15,8 +15,10 @@ from telegram.error import NetworkError, TimedOut
 
 import bot
 
+# Structurally valid but fabricated — never paste a real token here. This file
+# once held the live one, which then shipped to a public repo.
 TOKEN_URL = ("https://api.telegram.org/"
-             "botREDACTED-ROTATED-TOKEN/sendMessage")
+             "bot1234567890:AAHfakefakefakefakefakefakefakefake12/sendMessage")
 
 
 # --- log redaction ---------------------------------------------------------
