@@ -46,9 +46,9 @@ _env.filters["tex"] = tex_escape
 def _dates(start, end) -> str:
     start, end = (start or "").strip(), (end or "").strip()
     if start and end:
-        return f"{start} -- {end}"   # LaTeX renders "--" as an en-dash
+        return f"{start} - {end}"
     if start:
-        return f"{start} -- Present"
+        return f"{start} - Present"
     return end
 
 
@@ -114,7 +114,7 @@ def _normalize(data: dict) -> dict:
     certificates = [{
         "name": c.get("name") or "",
         "date": c.get("date") or "",
-        "detail": " — ".join(x for x in (c.get("issuer"), c.get("url")) if x),
+        "detail": ", ".join(x for x in (c.get("issuer"), c.get("url")) if x),
     } for c in (data.get("certificates") or []) if c.get("name")]
 
     skills = [{
@@ -180,7 +180,7 @@ def _selftest() -> None:
         # bare (inline date) — the template takes a different branch for each.
         "certificates": [{"name": "Professional Scrum Master I", "date": "2024",
                           "issuer": "Scrum.org"},
-                         {"name": "AWS Certified Developer -- Associate"}],
+                         {"name": "AWS Certified Developer, Associate"}],
         "skills": [{"name": "Languages", "keywords": ["Python", "SQL", "Scala"]},
                    {"name": "Cloud", "keywords": ["AWS", "Snowflake"]}],
     }

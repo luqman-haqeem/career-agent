@@ -18,6 +18,10 @@ It runs on the **[OpenCode](https://opencode.ai) CLI** pointed at **[OpenRouter]
 - **Resume critique** — ask it to score a generated resume against a JD; you get a
   /100 with how five reader types (ATS bot → technical reviewer) see it and the
   top fixes.
+- **Scored before it's sent** — every new resume is graded against the JD and
+  revised once if it misses your bar (90/100 by default), so the *first* draft you
+  receive is already there. When it honestly can't be, the reply says where it
+  landed and what's capping it, rather than padding the resume to clear the bar.
 - **Stays honest over time** — a corrections log remembers any fact you've fixed,
   and metrics carry provenance (verified / self-reported / estimate) so nothing
   gets inflated.

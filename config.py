@@ -111,6 +111,26 @@ def routing_active() -> bool:
     return model_for("critique") != OPENCODE_MODEL or model_for("resume") != OPENCODE_MODEL
 
 
+# --- Resume quality gate ---------------------------------------------------
+# Score every freshly written resume against the JD BEFORE it is delivered, and
+# revise it if it misses the bar. The user's ask (2026-09-12): the first resume
+# they receive should already be at 90, and when it can't be, they want to be
+# told rather than handed a quiet 82 they only discover by tapping Critique.
+#
+# Costs one extra model run per resume, two when a revision is needed. That is
+# the trade for not sending a draft nobody has checked.
+RESUME_GATE_ENABLED = os.getenv("RESUME_GATE_ENABLED", "true").strip().lower() != "false"
+
+# The bar, on the 8-dimension critique rubric in CLAUDE.md. Keep it in step with
+# the apply bar in memory/goals.md — that file is what the agent reasons from.
+RESUME_TARGET_SCORE = int(os.getenv("RESUME_TARGET_SCORE", "90"))
+
+# How many revise-and-rescore rounds a draft under the bar gets. One is usually
+# all that helps: a second round tends to churn wording, and anything still
+# short after the first is normally a real experience gap, which no rewrite can
+# honestly close.
+RESUME_GATE_MAX_REVISIONS = int(os.getenv("RESUME_GATE_MAX_REVISIONS", "1"))
+
 # Comma-separated Telegram user IDs allowed to use the bot. Empty = allow all
 # (you'll be warned). Send /start to learn your ID, then lock it down here.
 _allowed = os.getenv("ALLOWED_USER_IDS", "").strip()

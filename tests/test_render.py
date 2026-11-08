@@ -58,6 +58,26 @@ def test_certificates_keep_their_given_order():
     assert tex.index("First Cert") < tex.index("Second Cert")
 
 
+def test_dates_and_cert_detail_never_contain_banned_dashes():
+    # render.py used to build date ranges with "--" (LaTeX's en-dash ligature)
+    # and join cert issuer/url with a literal em dash, regardless of what the
+    # AI wrote in the JSON. Guard the renderer itself, not just resume content.
+    tex = _tex({
+        **BASE,
+        "work": [{"name": "Inmagine", "position": "Web Application Developer",
+                   "startDate": "2025-04", "endDate": "2025-09",
+                   "highlights": ["Shipped a thing."]}],
+        "education": [{"institution": "Selangor Islamic University",
+                       "studyType": "Diploma", "area": "Computer Science",
+                       "startDate": "2018", "endDate": "2020"}],
+        "certificates": [{"name": "PSM I", "issuer": "Scrum.org",
+                           "url": "https://example.com/verify"}],
+    })
+    assert "--" not in tex
+    assert "—" not in tex  # em dash
+    assert "–" not in tex  # en dash
+
+
 def test_existing_sections_still_render():
     tex = _tex({
         **BASE,

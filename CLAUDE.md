@@ -193,6 +193,19 @@ the file is what triggers the bot to regenerate and resend the PDF.
   "contributed to / worked on / helped" for team efforts. Never upgrade team
   work to sole credit, and never claim a result ("increased X by Y%") unless
   that number is `verified` or `self-reported` in memory.
+- _Banned characters — no exceptions:_ NEVER use an em dash (—), en dash used
+  as punctuation (–), or a tilde (~) anywhere in resume text. This has been
+  corrected repeatedly; treat it as a hard rule, not a style preference.
+  - Em/en dash as a clause connector or list intro → rewrite as two sentences,
+    or use a comma/colon/semicolon, rephrasing the verb if needed so it stays
+    grammatical (e.g. "did X — increasing Y" → "did X, increasing Y" or
+    "Did X. This increased Y").
+  - Tilde before a number (an approximation) → spell it out with a plain word
+    already used elsewhere in that resume's style: "about", "around", "over",
+    "roughly" — never the `~` glyph.
+  - Before writing, scan your own draft text for `—`, `–`, and `~` and remove
+    every instance. This check runs on every resume write AND every revision,
+    not just the first draft.
 - _Avoid AI-resume tells._ Don't use: leveraged, spearheaded, passionate,
   results-driven, synergy, seamless, robust, cutting-edge, best-in-class,
   dynamic, team player, thought leader, "fast-paced world", delve, tapestry,
@@ -206,7 +219,36 @@ the file is what triggers the bot to regenerate and resend the PDF.
 - _Pre-write self-check (do silently before saving the JSON):_ (1) every claim
   traces to memory or the user; (2) no `estimate` is stated as a measured fact;
   (3) nothing contradicts `memory/corrections.md`; (4) no banned word above;
-  (5) verbs match the user's real role. If any fails, fix it before writing.
+  (5) verbs match the user's real role; (6) zero em dashes, en dashes, or
+  tildes anywhere in the JSON — grep your own draft for `—`, `–`, `~` before
+  writing the file. If any fails, fix it before writing.
+
+**The 90 bar — the first draft is the one that counts.** The user's standard is
+that the FIRST resume they receive for a job already scores **90 or more** on
+the 8-dimension rubric in section 5, not the third revision of it. So before you
+save the JSON, score your own draft on those 8 dimensions and spend the effort
+where the rubric actually pays: bullet impact and quantification (25) and
+narrative/role fit (15) move the number far more than skills-list padding does.
+
+If your honest draft can't reach 90, **say so in your reply** — the score you
+think it deserves, which dimensions are holding it down, and whether the cause
+is fixable wording or a real experience gap. Never close that distance by
+inflating a claim, stretching a metric, or mirroring a JD keyword you can't back
+up: an accurate 84 that the user knows is an 84 is the outcome they asked for.
+A 90 bought with a claim they can't defend in an interview is a failure.
+
+After you save the resume, the bot runs one scoring pass over the file and, if
+it lands under the bar, asks you to revise once and re-score. Those turns tell
+you to answer in exactly this shape, and nothing else:
+
+```
+[[SCORE:86|thin evidence of production Kubernetes]]
+<one line: the highest-impact fix, or what you changed>
+```
+
+Grade strictly in that pass. It gates what the user is about to send, so a
+number you can't defend is worse than a low one. If a revision can only clear
+the bar by inventing something, leave the resume honest and let the score stand.
 
 **5. Resume critique / score.** When the user asks to critique, score, rate,
 review, or "how strong is" a resume (or accepts the offer above):

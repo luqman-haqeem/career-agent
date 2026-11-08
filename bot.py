@@ -23,6 +23,7 @@ import jobs_store
 import onboarding
 import render
 import preferences
+import resume_gate
 import scan
 import telegram_format
 import threads
@@ -561,6 +562,7 @@ async def _run_and_reply(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
     text, job_label = strip_job_marker(text)
     if job_label and thread != threads.MAIN:
         threads.set_label(chat_id, thread, job_label)
+    text, claimed = await _gated(chat_id, thread, text, before, claimed)
     if lost:
         text = _lost_history_notice(chat_id, thread) + text
     # Quote the message being answered, so the job an answer belongs to is
@@ -715,6 +717,72 @@ async def _deliver_new_files(update: Update, before: dict, thread: str = None,
     await _deliver_changed_resumes(
         update.get_bot(), update.effective_chat.id, before, thread, claimed,
         reply_to)
+
+
+# --- Resume quality gate ---------------------------------------------------
+async def _gate_turn(chat_id: int, thread: str, prompt: str, model: str):
+    """One scoring/revision turn in the thread that holds the JD."""
+    async with _lock_for(chat_id, thread):
+        session_id = load_session_id(chat_id, thread)
+        text, session_id = await run_turn(prompt, session_id, model=model)
+        save_session_id(chat_id, session_id, thread)
+        threads.touch(chat_id, thread)
+    log.info("score gate on thread %s: %s", thread,
+             resume_gate.strip_marker(text)[:200] or "(no text)")
+    return resume_gate.parse_score(text)
+
+
+async def _score_gate(chat_id: int, thread: str, name: str) -> str:
+    """Score a just-written resume, revise it if it misses the bar, and return
+    the verdict line to show the user.
+
+    Runs before delivery so the PDF the user receives is the revised one, and
+    so a draft that cannot honestly reach the bar arrives with that said out
+    loud instead of looking finished.
+
+    Never raises. A gate that breaks must not cost the user the resume itself,
+    so every failure degrades to an empty note and the draft goes out as it is.
+    """
+    if not config.RESUME_GATE_ENABLED or not name:
+        return ""
+    path = config.RESUMES_DIR / name
+    if path.suffix.lower() != ".json" or not path.exists():
+        return ""
+
+    thread = thread or threads.MAIN
+    target = config.RESUME_TARGET_SCORE
+    model = config.model_for("critique")
+    revised = False
+    try:
+        score, reason = await _gate_turn(
+            chat_id, thread, resume_gate.score_prompt(name, target), model)
+        for _ in range(max(0, config.RESUME_GATE_MAX_REVISIONS)):
+            if score is None or score >= target:
+                break
+            revised = True
+            score, reason = await _gate_turn(
+                chat_id, thread,
+                resume_gate.revise_prompt(name, target, score, reason), model)
+    except Exception:  # noqa: BLE001 - the resume matters more than its score
+        log.warning("score gate failed for %s", name, exc_info=True)
+        return ""
+    return resume_gate.verdict(score, target, reason, revised)
+
+
+async def _gated(chat_id: int, thread: str, text: str, before: dict,
+                 claimed: str):
+    """Score whatever resume this turn just wrote and fold the verdict into the
+    reply. Returns (text, resolved filename).
+
+    The filename falls back to the newest changed JSON: a turn that forgot its
+    [[RESUME:...]] marker still produced a resume, and skipping the gate for it
+    is exactly the silent-82 case the gate exists to prevent.
+    """
+    name = claimed or _newest_resume_since(before)
+    note = await _score_gate(chat_id, thread, name)
+    if note:
+        text = f"{text}\n\n{note}" if text else note
+    return text, name
 
 
 # --- Job discovery ---------------------------------------------------------
@@ -912,6 +980,7 @@ async def _draft_resume(ctx: ContextTypes.DEFAULT_TYPE, chat_id: int, job: dict,
 
     text, claimed = strip_resume_marker(text)
     text, _job_label = strip_job_marker(text)   # already named from the job card
+    text, claimed = await _gated(chat_id, thread, text, before, claimed)
     return {"thread": thread, "note": text, "file": claimed,
             "before": before, "notice_id": _message_id(sent)}
 
@@ -1113,6 +1182,7 @@ async def _generate_resume_in_thread(ctx: ContextTypes.DEFAULT_TYPE, chat_id: in
 
     text, claimed = strip_resume_marker(text)
     text, _job = strip_job_marker(text)
+    text, claimed = await _gated(chat_id, thread, text, before, claimed)
     if lost:
         text = _lost_history_notice(chat_id, thread) + text
     await _send_chat(ctx.bot, chat_id, text, thread, reply_to=anchor)
